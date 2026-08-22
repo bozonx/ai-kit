@@ -1,0 +1,63 @@
+{
+    "name": "n8n-nodes-bozonx-free-llm-router-microservice",
+    "version": "1.11.0",
+    "description": "n8n node for Free LLM Router Microservice",
+    "keywords": [
+        "n8n-community-node-package",
+        "n8n",
+        "llm",
+        "router",
+        "ai"
+    ],
+    "license": "MIT",
+    "homepage": "https://github.com/bozonx/free-llm-router-microservice",
+    "author": {
+        "name": "bozonx",
+        "email": ""
+    },
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/bozonx/free-llm-router-microservice.git"
+    },
+    "main": "index.js",
+    "scripts": {
+        "build": "n8n-node build",
+        "build:watch": "tsc --watch",
+        "dev": "n8n-node dev",
+        "lint": "n8n-node lint",
+        "lint:fix": "n8n-node lint --fix",
+        "release:n8n": "n8n-node release",
+        "prepublishOnly:n8n": "n8n-node prerelease",
+        "publish:npm": "pnpm build && pnpm publish --access public"
+    },
+    "files": [
+        "dist"
+    ],
+    "n8n": {
+        "n8nNodesApiVersion": 1,
+        "credentials": [
+            "dist/credentials/FreeLlmRouterApi.credentials.js"
+        ],
+        "nodes": [
+            "dist/nodes/FreeLlmRouter/FreeLlmRouter.node.js"
+        ]
+    },
+    "dependencies": {
+        "@langchain/openai": "^1.2.0"
+    },
+    "devDependencies": {
+        "@langchain/core": "^1.1.8",
+        "@types/node": "^25.0.3",
+        "@typescript-eslint/parser": "^8.50.1",
+        "eslint": "^9.39.2",
+        "eslint-plugin-n8n-nodes-base": "^1.16.4",
+        "gulp": "^5.0.1",
+        "n8n-workflow": "^2.2.1",
+        "prettier": "^3.7.4",
+        "typescript": "^5.9.3"
+    },
+    "peerDependencies": {
+        "@langchain/core": "*",
+        "n8n-workflow": "*"
+    }
+}

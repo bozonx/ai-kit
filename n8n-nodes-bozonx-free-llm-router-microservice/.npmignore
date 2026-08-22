@@ -1,0 +1,20 @@
+# Source files (only dist should be published)
+credentials/*.ts
+!credentials/*.js
+nodes/**/*.ts
+!nodes/**/*.js
+
+# Development files
+.eslintrc.js
+.prettierrc
+tsconfig.json
+gulpfile.js
+*.log
+.env
+
+# Git
+.git
+.gitignore
+
+# Documentation (README and LICENSE should be included)
+# CHANGELOG.md should be included
