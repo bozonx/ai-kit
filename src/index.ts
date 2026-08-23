@@ -78,5 +78,39 @@ export type {
   FinishPart,
 } from './stream/stream-parts.js';
 
+/**
+ * Message shapes come straight from the AI SDK.
+ *
+ * Re-exported rather than redeclared so that a consumer never has to depend on
+ * `ai` itself to type a conversation, and so that an SDK upgrade is one bump in
+ * one package instead of a coordinated one across every product.
+ */
+export type { ModelMessage } from 'ai';
+
+export { createAiKit } from './kit.js';
+export type { AiKit, AiKitOptions } from './kit.js';
+
+export { ProviderRegistry } from './providers/registry.js';
+export type { ProviderFactory, ProviderRegistryOptions } from './providers/registry.js';
+
+export { selectCandidates, fitsSignals } from './policy/policy.js';
+export type { PolicyInput, PolicySignals, ModelCandidate } from './policy/policy.js';
+
+export { DEFAULT_RETRY_POLICY, runGenerate, runStream } from './execute/run.js';
+export type {
+  RetryPolicy,
+  ExecutionDeps,
+  GenerateRequest,
+  GenerateResult,
+  StreamRequest,
+  CallAccounting,
+} from './execute/run.js';
+
+export { classifyError } from './execute/classify.js';
+export type { ClassifyContext } from './execute/classify.js';
+
+export { buildPrompt, wrapUntrusted, escapeUntrusted } from './prompt/untrusted.js';
+export type { BuildPromptInput, BuiltPrompt, UntrustedBlock } from './prompt/untrusted.js';
+
 export { parseModelInput, formatModelRef } from './utils/model-ref.js';
 export type { ModelRef, ParsedModelInput } from './utils/model-ref.js';

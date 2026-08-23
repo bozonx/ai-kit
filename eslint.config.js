@@ -54,6 +54,7 @@ export default [
                 TextDecoder: 'readonly',
                 AbortSignal: 'readonly',
                 AbortController: 'readonly',
+                ReadableStream: 'readonly',
                 fetch: 'readonly',
             },
         },
