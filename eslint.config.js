@@ -49,6 +49,12 @@ export default [
                 Set: 'readonly',
                 Proxy: 'readonly',
                 Reflect: 'readonly',
+                URL: 'readonly',
+                TextEncoder: 'readonly',
+                TextDecoder: 'readonly',
+                AbortSignal: 'readonly',
+                AbortController: 'readonly',
+                fetch: 'readonly',
             },
         },
         plugins: {
@@ -89,7 +95,8 @@ export default [
             '@typescript-eslint/consistent-type-exports': 'error',
             '@typescript-eslint/no-import-type-side-effects': 'error',
 
-            // NestJS specific rules
+            // Explicit accessibility keeps the public surface of the package
+            // visible in the source instead of only in the generated types.
             '@typescript-eslint/explicit-member-accessibility': [
                 'error',
                 {
@@ -120,6 +127,40 @@ export default [
             'no-debugger': 'error',
             'prefer-const': 'error',
             'no-var': 'error',
+        },
+    },
+
+    // The library invariants, as rules rather than as good intentions.
+    //
+    // The package is meant to be dropped into any product, which it stops being
+    // the moment it reaches for a framework or an environment variable.
+    // Everything it does not implement itself arrives through a port, so a
+    // violation here is not a style question — it is the component having been
+    // put in the wrong repository.
+    {
+        files: ['src/**/*.ts'],
+        rules: {
+            'no-restricted-imports': [
+                'error',
+                {
+                    patterns: [
+                        {
+                            group: ['@nestjs/*', '@prisma/*', '.prisma/*'],
+                            message:
+                                'ai-kit is framework- and storage-agnostic. If a component needs Nest or Prisma, it belongs in the consumer, not here.',
+                        },
+                    ],
+                },
+            ],
+            'no-restricted-properties': [
+                'error',
+                {
+                    object: 'process',
+                    property: 'env',
+                    message:
+                        'The library is configured through its constructor, not through the environment. Read the variable in the consumer and pass the value in.',
+                },
+            ],
         },
     },
 

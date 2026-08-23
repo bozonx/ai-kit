@@ -1,1040 +1,117 @@
-# Free LLM Router Microservice
+# @bozonx/ai-kit
 
-Микросервис для маршрутизации запросов к бесплатным LLM моделям через различных провайдеров с поддержкой автоматического fallback на платные модели.
+The part of an AI feature that is the same in every product.
 
-## 🎯 Возможности
+Not a model router, and no longer a microservice: a library you call in-process.
+It holds a priced model catalog, the rules for choosing a model and retrying a
+call, the vocabulary a streamed answer is made of, error classification, and the
+ports through which a host supplies keys, shared state and observability.
 
-- 🤖 **OpenAI-совместимый API** — единый интерфейс для доступа к различным LLM
-- 🔄 **Автоматический выбор модели** — Smart Strategy с весами для weighted random selection
-- 🛡️ **Умный fallback** — автоматическое переключение на платную модель при исчерпании попыток
-- ⚡ **Circuit Breaker** — автоматическое исключение проблемных моделей с восстановлением
-- 🚦 **Model Rate Limiting** — защита моделей от перегрузки (skew protection)
-- 🎲 **Интеллектуальный retry** — обработка rate limits и других ошибок с jitter-задержкой
-- 🏷️ **Гибкая фильтрация** — выбор моделей по тегам, типу, размеру контекста
-- 📊 **Прозрачная метаинформация** — полная информация о попытках и ошибках в ответе
-- 🚀 **Провайдеры** — OpenRouter (бесплатные модели) и DeepSeek (платная модель для fallback)
-- 🔌 **Graceful Shutdown** — корректное завершение с отменой запросов и JSON-ответом клиенту
-- 🖼️ **Vision Support** — поддержка изображений в запросах (multimodal content)
-- 🛠️ **Function Calling** — вызов функций/инструментов через tools API
-- 📡 **Streaming (SSE)** — потоковая передача ответов через Server-Sent Events
+It deliberately holds nothing about tenants, users, projects, permissions,
+storage or money. If a component needs one of those words, it belongs to the
+application, not here — and a test fails when it creeps in.
 
-## 📋 Требования
+> **Status: foundation.** The catalog, pricing, ports, error taxonomy, stream
+> vocabulary and the in-memory state store are in place and tested. Provider
+> adapters, the policy engine and call execution are the next step; until they
+> land, `createAiKit` does not exist and nothing calls a model. The plan is
+> `dev_docs/ai-kit-refactor-plan.md`.
 
-- Node.js 22+
-- pnpm 10+
-- API ключи: OpenRouter и/или DeepSeek (опционально)
-
-## ⚡ Быстрый старт
+## Install
 
 ```bash
-# 1) Установка зависимостей
-pnpm install
-
-# 2) Настройка конфигурации
-cp config.yaml.example config.yaml
-cp .env.production.example .env.production
-
-# 3) Добавьте в .env.production переменные окружения, используемые в config.yaml
-# Пример для дефолтной конфигурации:
-# OPENROUTER_API_KEY=your_key_here
-# DEEPSEEK_API_KEY=your_key_here  (опционально, для fallback)
-
-# 4) Сборка и запуск
-pnpm build
-pnpm start:prod
+pnpm add @bozonx/ai-kit
 ```
 
-URL по умолчанию: `http://localhost:8080/api/v1`
+During development, consume it through a workspace link so that changes are
+visible without publishing.
 
-## 🔧 Конфигурация
+## The catalog
 
-> ⚠️ **Важно:** Конфигурационные файлы (`config.yaml`, `models.yaml` и .env) загружаются **только при старте приложения**. Для применения любых изменений в конфигурации необходимо **перезапустить сервис**.
-
-### Переменные окружения
-
-Основные переменные (`.env.production`):
-
-```bash
-# Основные настройки
-NODE_ENV=production
-LISTEN_HOST=0.0.0.0
-LISTEN_PORT=8080
-LOG_LEVEL=warn
-TZ=UTC
-
-# Путь к конфигу роутера
-ROUTER_CONFIG_PATH=./config.yaml
-
-# Произвольные переменные для использования в config.yaml
-# Названия могут быть любыми — в конфиге они подставляются через ${VAR_NAME}
-OPENROUTER_API_KEY=your_openrouter_key
-DEEPSEEK_API_KEY=your_deepseek_key
-```
-
-### Конфигурация роутера
-
-Основной конфиг (`config.yaml`):
-
-```yaml
-# Путь к файлу со списком моделей
-modelsFile: ./models.yaml
-
-# Настройки провайдеров
-providers:
-  openrouter:
-    enabled: true
-    apiKey: ${OPENROUTER_API_KEY}
-    baseUrl: https://openrouter.ai/api/v1
-    
-  deepseek:
-    enabled: true
-    apiKey: ${DEEPSEEK_API_KEY}
-    baseUrl: https://api.deepseek.com
-
-# Настройки роутинга
-routing:
-  maxModelSwitches: 3        # Максимум переключений между моделями
-  maxSameModelRetries: 2     # Максимум ретраев на одной модели (429, сетевые ошибки)
-  retryDelay: 3000           # Задержка между повторами (429 и сетевые ошибки) (мс)
-  timeoutSecs: 60            # Таймаут запроса к провайдеру (в секундах)
-  
-  # Fallback на платную модель
-  fallback:
-    enabled: true
-    provider: deepseek
-    model: deepseek-chat
-
-# Circuit Breaker (опционально, есть дефолты)
-# circuitBreaker:
-#   failureThreshold: 3       # Ошибок для открытия circuit (default: 3)
-#   cooldownPeriodMins: 3     # Время в OPEN состоянии, мин (default: 3)
-#   successThreshold: 2       # Успехов для закрытия из HALF_OPEN (default: 2)
-#   statsWindowSizeMins: 10   # Окно статистики, мин (default: 10)
-
-# Global model rate limit (protection against skew)
-# Max requests per minute per model. Default: 200.
-modelRequestsPerMinute: 200
-```
-
-### Список моделей
-
-Модели настраиваются в `models.yaml`. Пример:
+The catalog is the main entity, not a lookup table. It says what a model costs,
+what it can do, and which tasks it is a candidate for — so changing the model
+behind a product feature is an edit to a YAML file, not a release.
 
 ```yaml
 models:
-  - name: deepseek-r1
-    provider: openrouter
-    model: deepseek/deepseek-r1:free
-    type: reasoning
-    contextSize: 64000
-    maxOutputTokens: 8000
-    tags: [reasoning, code, math]
-    jsonResponse: true
-    available: true
-    # Smart Strategy поля (опционально, есть дефолты)
-    weight: 5            # Вес для случайного выбора (1-100), default: 1. Больше = чаще выбирается
-    maxConcurrent: 3     # Макс. параллельных запросов, default: unlimited
+  - name: gemini-2.5-flash
+    provider: google
+    model: gemini-2.5-flash
+    tier: standard # economy | standard | premium
+    contextSize: 1048576
+    maxOutputTokens: 65536
+    modalities:
+      input: [text, image, audio, pdf]
+      output: [text]
+    capabilities:
+      tools: true
+      structuredOutput: true
+      promptCaching: true
+    pricing:
+      version: '2026-08'
+      # Per million tokens, in micro-units of the currency: 1_000_000 = 1 USD.
+      inputPerMTok: 300000
+      outputPerMTok: 2500000
+      cachedInputPerMTok: 75000
+
+taskClasses:
+  summarize: [gemini-2.5-flash, gpt-4.1-mini]
+  chat_agentic: [gemini-2.5-pro, claude-sonnet-4.5]
 ```
 
-#### Автоматическое обновление моделей
+```ts
+import { Catalog, calculateCost } from '@bozonx/ai-kit';
 
-Для автоматического получения актуального списка бесплатных моделей с OpenRouter можно использовать скрипт:
+// Throws on a bad price, an unknown model in a task class, a duplicate name.
+// Loudly, at startup — a catalog that is wrong is a bill that is wrong.
+const catalog = Catalog.fromFile('./models.yaml');
+
+const model = catalog.require('gemini-2.5-flash');
+const cost = calculateCost(model, {
+  inputTokens: 12_000,
+  cachedInputTokens: 8_000,
+  outputTokens: 900,
+  reasoningTokens: 0,
+});
+// cost.totalMicros, cost.priceVersion — hand these to your own accounting.
+```
+
+`pricing.version` exists so that history stays recomputable after a provider
+changes prices. Record it with every call; without it a re-pricing turns the
+past into numbers nobody can defend.
+
+`tier` is the boundary a fallback may not cross. A premium model quietly
+replaced by a free one is not a degraded answer, it is a different product.
+
+## Ports
+
+Everything the library needs from the outside arrives through `src/ports.ts`:
+`KeyProvider`, `UsageSink`, `TraceSink`, `StateStore`, `Clock`. All are optional
+except keys — a library that cannot be called until five interfaces are
+implemented gets worked around instead of used.
+
+`StateStore` matters more than it looks: circuit breaker and rate limiter state
+must be shared, because with two API processes behind a balancer, a model banned
+by one is happily used by the other. `MemoryStateStore` ships with the package
+for tests and single-process deployments; anything larger implements the port
+over Redis.
+
+## Streaming
+
+`StreamPart` is one vocabulary for both ends of the connection —
+`model`, `text-delta`, `reasoning-delta`, `tool-call`, `tool-result`, `sources`,
+`usage`, `error`, `finish`. The consumer's frontend imports the type rather than
+describing it a second time, because two hand-written copies of a wire format
+drift the first time a field is added.
+
+## Development
 
 ```bash
-# Запустить скрипт обновления
-npm run update-models
-```
-
-Скрипт выполняет следующие действия:
-1. Запрашивает список всех моделей через OpenRouter API
-2. Фильтрует модели, оставляя только бесплатные (цена 0)
-3. Создаёт файл `models_updated.yaml` с обновленным списком
-4. Сохраняет существующие локальные/другие модели (не openrouter)
-
-После проверки `models_updated.yaml`, вы можете заменить им текущий конфиг:
-
-```bash
-mv models_updated.yaml models.yaml
-```
-
-#### Система тегов (логика фильтрации)
-
-Система фильтрации в роутере использует логику **DNF (Дизъюнктивная нормальная форма)**:
-
-- **OR (ИЛИ)** — между элементами списка (через запятую в строке или элементы массива).
-- **AND (И)** — между тегами внутри одного элемента (через символ `&`).
-
-**Примеры:**
-
-- `tags: "llama, qwen"` — найдет любую модель Llama **ИЛИ** любую модель Qwen.
-- `tags: "coding&tier-1, reasoning&tier-2"` — найдет либо топовую модель для кодинга, либо хорошую модель для рассуждений.
-- `tags: ["best-for-ru", "vision"]` — найдет модель, подходящую либо для русского языка, либо с поддержкой Vision.
-
-**Категории тегов:**
-
-1. **Size** (размер модели по количеству параметров):
-   - `small` — маленькие модели (1B-14B), например Llama 3 8B
-   - `medium` — средние модели (15B-69B), например Qwen 2.5 32B
-   - `large` — большие модели (70B+), например Llama 3.3 70B
-   - `not-small` — средние и большие модели (все, кроме `small`)
-   - `powerful` — мощные модели (все `medium` и `large`, а также флагманские `tier-1` модели)
-
-2. **Quality Tiers** (категории качества):
-   - `tier-1` — флагманские топовые модели (GPT-4o, Claude 3.5 Sonnet, Gemini 1.5 Pro, Llama 3.3 70B+)
-   - `tier-2` — сильные модели среднего уровня (Llama 3 8B, Mistral Nemo, Qwen 2.5 32B+, Mixtral)
-   - `tier-1-2` — модели первого и второго тиров вместе
-   - `tier-3` — остальные модели
-
-3. **Use Cases** (сценарии использования):
-   - `coding` — специализированные модели для программирования
-   - `not-coder` — модели не специально для кодинга (в названии нет упоминаний кодинга)
-   - `creative` — модели для творческого письма
-   - `analysis` — модели для анализа данных и исследований
-   - `chat` — модели, оптимизированные для диалогов
-   - `agentic` — модели, отлично следующие сложным инструкциям
-   - `finance` — модели для финансового анализа, трейдинга и анализа рынка
-
-4. **Language Support** (языковая поддержка):
-   - `best-for-ru`, `best-for-en`, `best-for-zh`, `best-for-es` и др. (всего более 20 языков)
-
-5. **Model Families** (семейства моделей):
-   - Название семейства: `llama`, `gemini`, `qwen`, `deepseek`, `mistral` и др.
-   - Мажорная версия: `llama-3`, `gemini-2`, `qwen-2.5`, и т.д.
-
-6. **Capabilities** (возможности):
-   - `reasoning` — модели с глубоким рассуждением (R1, o1-style)
-   - `vision` — модели с поддержкой анализа изображений
-   - `long-context` — модели с поддержкой длинного контекста (от 512к токенов)
-
-**Логика фильтрации:**
-
-- Список тегов (строка с запятыми или массив) объединяется по логике **OR** (ИЛИ). Это позволяет легко выбирать из нескольких семейств или типов моделей.
-- Для логики **AND** (И) внутри одного правила (комбинация свойств) используйте символ `&`.
-
-**Примеры использования:**
-
-```bash
-# Найти ЛИБО модель для кодинга, ЛИБО модель с глубоким рассуждением
-curl -X POST http://localhost:8080/api/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "tags": ["coding", "reasoning"],
-    "messages": [...]
-  }'
-
-# Найти ЛИБО топовую модель Llama, ЛИБО любую модель Gemini
-curl -X POST http://localhost:8080/api/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "tags": "llama&tier-1, gemini",
-    "messages": [...]
-  }'
-```
-# Использовать только топовые модели (Tier 1)
-curl -X POST http://localhost:8080/api/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "tags": ["tier-1"],
-    "messages": [{"role": "user", "content": "Help me with strategy"}]
-  }'
-```
-
-**Примеры использования тегов:**
-
-```bash
-# Найти модель для программирования с поддержкой русского языка
-curl -X POST http://localhost:8080/api/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "tags": ["coding", "best-for-ru"],
-    "messages": [{"role": "user", "content": "Напиши функцию на Python"}]
-  }'
-
-# Найти модель семейства Llama 3 для агентских задач
-curl -X POST http://localhost:8080/api/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "tags": ["llama-3", "agentic"],
-    "messages": [{"role": "user", "content": "Follow these instructions..."}]
-  }'
-
-# Найти модель для творческого письма на испанском
-curl -X POST http://localhost:8080/api/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "tags": ["creative", "best-for-es"],
-    "messages": [{"role": "user", "content": "Escribe un poema sobre..."}]
-  }'
-```
-
-**Примеры тегов для популярных моделей:**
-
-- `llama-3.3-70b-instruct`: `general`, `chat`, `agentic`, `best-for-es`, `llama`, `llama-3`
-- `deepseek-chat`: `general`, `coding`, `chat`, `agentic`, `best-for-ru`, `deepseek`
-- `qwen-2.5-coder`: `general`, `coding`, `chat`, `agentic`, `best-for-ru`, `best-for-eo`, `qwen`, `qwen-2`
-- `gemini-2.0-flash-exp`: `general`, `agentic`, `best-for-es`, `best-for-eo`, `vision`, `gemini`, `gemini-2`
-
-
-
-## 📡 API Endpoints
-
-### POST `/api/v1/chat/completions`
-
-OpenAI-совместимый endpoint для chat completions.
-
-#### Request Body
-
-```typescript
-{
-  // Стандартные OpenAI поля (обязательные)
-  "messages": [
-    {
-      "role": "user",
-      "content": "Hello, how are you?"
-    }
-  ],
-  
-  // Опциональные OpenAI поля
-  "temperature": 0.7,          // 0-2, default 1
-  "max_tokens": 1000,          // Максимум токенов в ответе
-  "top_p": 0.9,                // 0-1
-  "frequency_penalty": 0.0,    // -2 to 2
-  "presence_penalty": 0.0,     // -2 to 2
-  "stop": ["END"],             // Stop sequences
-  
-  // Расширенные поля роутера
-  // Поле model поддерживает несколько форматов:
-  // Конкретная модель (любой провайдер)
-  // "model": "openrouter/deepseek-r1",                  // Модель от конкретного провайдера
-  // "model": ["openrouter/deepseek-r1", "llama-3.3-70b"], // Приоритетный список
-  // "model": ["deepseek-r1", "llama-3.3-70b", "auto"],  // Список + Smart Strategy fallback
-  // "model": "auto",                                    // Smart Strategy (default)
-  "model": "llama-3.3-70b",
-  "tags": ["code"],            // Фильтр по тегам
-  "type": "fast",              // Фильтр по типу: "fast" | "reasoning"
-  "min_context_size": 32000,   // Минимальный размер контекста
-  "min_max_output_tokens": 4000, // Минимальное количество выходных токенов
-  "response_format": { "type": "json_object" }, // Требуется JSON ответ
-  
-  // Smart Strategy поля
-  "prefer_fast": true,         // Предпочитать модели с наименьшей latency
-  "min_success_rate": 0.8,     // Минимальный success rate модели (0-1)
-  "selection_mode": "weighted_random", // "weighted_random", "best", "top_n_random"
-  
-  // Function Calling (OpenAI-совместимый)
-  "tools": [                   // Список инструментов
-    {
-      "type": "function",
-      "function": {
-        "name": "get_weather",
-        "description": "Get current weather",
-        "parameters": {
-          "type": "object",
-          "properties": {
-            "location": { "type": "string" }
-          }
-        }
-      }
-    }
-  ],
-  "tool_choice": "auto",        // "auto", "none" или { "type": "function", "function": { "name": "..." } }
-  
-  // Routing behavior overrides (per-request)
-  "max_model_switches": 5,      // Override config.routing.maxModelSwitches for this request only
-  "max_same_model_retries": 3,  // Override config.routing.maxSameModelRetries for this request only
-  "retry_delay": 500,           // Override config.routing.retryDelay (ms) for this request only
-  "timeout_secs": 60,           // Override config.routing.timeoutSecs and provider timeout for this request only
-  "fallback_provider": "deepseek", // Override fallback provider for this request
-  "fallback_model": "deepseek-chat", // Override fallback model for this request
-  
-  // Capabilities filters
-  "supports_tools": true,       // Force selection of models with tool calling support
-
-  // Streaming
-  "stream": false               // Enable Server-Sent Events streaming (default: false)
-}
-```
-
-### Vision Support (Изображения)
-
-Микросервис поддерживает отправку изображений в запросах (multimodal content). Поле `content` может быть строкой или массивом объектов с типами `text` и `image_url`.
-
-#### Пример с изображением
-
-```bash
-curl -X POST http://localhost:8080/api/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "gemini-2.0-flash-exp",
-    "messages": [
-      {
-        "role": "user",
-        "content": [
-          {
-            "type": "text",
-            "text": "What is in this image?"
-          },
-          {
-            "type": "image_url",
-            "image_url": {
-              "url": "https://example.com/image.jpg",
-              "detail": "high"
-            }
-          }
-        ]
-      }
-    ]
-  }'
-```
-
-**Поддерживаемые форматы:**
-- `detail`: `"auto"` (default), `"high"`, `"low"` — уровень детализации анализа изображения
-- `url`: HTTP/HTTPS URL изображения или data URI (base64)
-
-**Примечание:** Поддержка Vision зависит от выбранной модели. Используйте модели с поддержкой изображений:
-- `gemini-2.0-flash-exp` (рекомендуется, 1M tokens context)
-- `nemotron-nano-12b-v2-vl` (128K tokens context)
-
-Вы можете фильтровать модели по поддержке различных типов входных данных:
-- `supports_image: true` — модели с поддержкой изображений
-- `supports_video: true` — модели с поддержкой видео
-- `supports_audio: true` — модели с поддержкой аудио
-- `supports_file: true` — модели с поддержкой файлов/документов
-- `supports_tools: true` — модели с поддержкой вызова инструментов
-
-Также можно использовать тег `vision` для фильтрации моделей с поддержкой изображений.
-
-**Vision-Capable модели:**
-
-| Модель | Провайдер | Context Size | Особенности |
-|--------|-----------|--------------|-------------|
-| gemini-2.0-flash-exp | openrouter | 1M tokens | Рекомендуется, большой контекст |
-| nemotron-nano-12b-v2-vl | openrouter | 128K tokens | Vision-language модель от NVIDIA |
-
-**Примеры фильтрации:**
-
-```bash
-# Автоматический выбор vision-capable модели
-curl -X POST http://localhost:8080/api/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "tags": ["vision"],
-    "messages": [...]
-  }'
-
-# Явное требование поддержки изображений
-curl -X POST http://localhost:8080/api/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "supports_image": true,
-    "messages": [...]
-  }'
-```
-
-
-#### Response Body
-
-```typescript
-{
-  // Стандартные OpenAI поля
-  "id": "chatcmpl-123",
-  "object": "chat.completion",
-  "created": 1677858242,
-  "model": "meta-llama/llama-3.3-70b-instruct:free",
-  "choices": [
-    {
-      "index": 0,
-      "message": {
-        "role": "assistant",
-        "content": null,
-        "tool_calls": [
-          {
-            "id": "call_abc123",
-            "type": "function",
-            "function": {
-              "name": "get_weather",
-              "arguments": "{\"location\": \"London\"}"
-            }
-          }
-        ]
-      },
-      "finish_reason": "stop"
-    }
-  ],
-  "usage": {
-    "prompt_tokens": 10,
-    "completion_tokens": 20,
-    "total_tokens": 30
-  },
-  
-  // Метаданные роутера
-  "_router": {
-    "provider": "openrouter",
-    "model_name": "llama-3.3-70b",
-    "attempts": 1,
-    "fallback_used": false, // Использовалась ли платная модель (fallback)
-    "errors": [],  // Ошибки предыдущих попыток (если были)
-    "data": {...}  // Распарсенный JSON (только если response_format запрашивает JSON и ответ валидный JSON)
-  }
-}
-```
-
-**Примечание о поле `data`:**
-Когда в запросе указан `response_format: { "type": "json_object" }` (или `json_schema`) и модель возвращает валидный JSON, сервер автоматически парсит содержимое поля `content` и добавляет результат в `_router.data`. Это упрощает работу с JSON-ответами в клиентских приложениях:
-
-```javascript
-// Вместо ручного парсинга:
-const content = response.choices[0].message.content;
-const data = JSON.parse(content);
-
-// Можно использовать готовый объект:
-const data = response._router.data;
-```
-
-### GET `/api/v1/models`
-
-Получение списка доступных моделей.
-
-#### Response Body
-
-```typescript
-{
-  "models": [
-    {
-      "name": "llama-3.3-70b",
-      "provider": "openrouter",
-      "type": "fast",
-      "contextSize": 128000,
-      "tags": ["general", "code"],
-      "available": true
-    },
-    // ... другие модели
-  ]
-}
-```
-
-## 💡 Примеры использования
-
-### Простой запрос
-
-```bash
-curl -X POST http://localhost:8080/api/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "messages": [
-      {"role": "user", "content": "What is 2+2?"}
-    ]
-  }'
-```
-
-### Запрос с фильтрацией
-
-```bash
-curl -X POST http://localhost:8080/api/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "messages": [
-      {"role": "user", "content": "Write a Python function to sort a list"}
-    ],
-    "tags": ["code"],
-    "type": "fast",
-    "temperature": 0.5
-  }'
-```
-
-### Фильтрация по выходным токенам
-
-```bash
-# Выбрать модель с поддержкой минимум 4000 выходных токенов
-curl -X POST http://localhost:8080/api/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "messages": [
-      {"role": "user", "content": "Generate a detailed analysis"}
-    ],
-    "min_max_output_tokens": 4000,
-    "temperature": 0.7
-  }'
-```
-
-### Выбор конкретной модели
-
-```bash
-curl -X POST http://localhost:8080/api/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "messages": [
-      {"role": "user", "content": "Explain quantum computing"}
-    ],
-    "model": "deepseek-r1"
-  }'
-```
-
-### Множественные модели с приоритетами
-
-Можно указать список моделей с приоритетами — они будут пробоваться по порядку:
-
-```bash
-curl -X POST http://localhost:8080/api/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "messages": [
-      {"role": "user", "content": "Solve this math problem"}
-    ],
-    "model": ["openrouter/deepseek-r1", "llama-3.3-70b", "auto"]
-  }'
-```
-
-**Форматы поля `model`:**
-- `"model-name"` — модель от любого провайдера
-- `"provider/model-name"` — модель от конкретного провайдера
-- `["model1", "provider/model2"]` — приоритетный список (пробуются по порядку)
-- `["model1", "model2", "auto"]` — после списка переход к Smart Strategy
-- `"auto"` или отсутствие — Smart Strategy (по умолчанию)
-
-**Логика:**
-1. Модели пробуются строго в порядке указания
-2. `provider/model` — использовать только указанный провайдер
-3. Без провайдера — ротация по всем провайдерам этой модели
-4. `auto` в конце — после явных моделей переход к Smart Strategy
-5. Без `auto` — после исчерпания списка сразу fallback на платную модель
-
-### Получение списка моделей
-
-```bash
-curl http://localhost:8080/api/v1/models
-```
-
-### Function Calling (Tools)
-
-```bash
-curl -X POST http://localhost:8080/api/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "llama-3.3-70b",
-    "messages": [
-      {"role": "user", "content": "What'\''s the weather in London?"}
-    ],
-    "tools": [
-      {
-        "type": "function",
-        "function": {
-          "name": "get_weather",
-          "description": "Get current weather",
-          "parameters": {
-            "type": "object",
-            "properties": {
-              "location": { "type": "string", "description": "City name" }
-            },
-            "required": ["location"]
-          }
-        }
-      }
-    ]
-  }'
-```
-
-### Streaming (Server-Sent Events)
-
-```bash
-# Streaming response with incremental chunks
-curl -N -X POST http://localhost:8080/api/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "messages": [
-      {"role": "user", "content": "Count from 1 to 10"}
-    ],
-    "stream": true
-  }'
-```
-
-**Ответ (SSE формат):**
-```
-data: {"id":"chatcmpl-123","object":"chat.completion.chunk","created":1677858242,"model":"meta-llama/llama-3.3-70b-instruct:free","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}],"_router":{"provider":"openrouter","model_name":"llama-3.3-70b","attempts":1,"fallback_used":false}}
-
-data: {"id":"chatcmpl-123","object":"chat.completion.chunk","created":1677858242,"model":"meta-llama/llama-3.3-70b-instruct:free","choices":[{"index":0,"delta":{"content":"1"},"finish_reason":null}]}
-
-data: {"id":"chatcmpl-123","object":"chat.completion.chunk","created":1677858242,"model":"meta-llama/llama-3.3-70b-instruct:free","choices":[{"index":0,"delta":{"content":", 2"},"finish_reason":null}]}
-
-data: [DONE]
-```
-
-**Примечание:** Streaming режим:
-- Использует Server-Sent Events (SSE)
-- **Поддерживает retry/fallback** - автоматическое переключение между моделями при ошибках
-- **Метаданные роутера** - первый chunk содержит поле `_router` с информацией о провайдере, модели, попытках и использовании fallback
-- Завершается сообщением `data: [DONE]`
-- При ошибке всех моделей stream прерывается с сообщением об ошибке
-
-### Vision (Анализ изображений)
-
-```bash
-# Отправка изображения для анализа
-curl -X POST http://localhost:8080/api/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "gemini-2.0-flash-exp",
-    "messages": [
-      {
-        "role": "user",
-        "content": [
-          {
-            "type": "text",
-            "text": "Опиши что изображено на этой картинке"
-          },
-          {
-            "type": "image_url",
-            "image_url": {
-              "url": "https://upload.wikimedia.org/wikipedia/commons/thumb/d/dd/Gfp-wisconsin-madison-the-nature-boardwalk.jpg/2560px-Gfp-wisconsin-madison-the-nature-boardwalk.jpg",
-              "detail": "high"
-            }
-          }
-        ]
-      }
-    ],
-    "max_tokens": 300
-  }'
-```
-
-**Примечание:** Vision поддержка:
-- Требует модель с поддержкой изображений:
-  - `gemini-2.0-flash-exp` (рекомендуется, 1M tokens context)
-  - `nemotron-nano-12b-v2-vl` (128K tokens context)
-- Поддерживает HTTP/HTTPS URLs и data URIs (base64)
-- Параметр `detail`: `"auto"`, `"high"`, `"low"` — контролирует детализацию анализа
-- Фильтрация: используйте тег `vision` или параметр `supports_image: true`
-
-
-
-## 🔄 Логика работы
-
-### Выбор модели
-
-1. **Приоритетный список** — если указан массив `model`, модели пробуются по порядку:
-   - Проверяется доступность (Circuit Breaker, `available`)
-   - Если указан провайдер (`provider/model`) — только от него
-   - Без провайдера — ротация по всем провайдерам модели
-2. **Конкретная модель** — если указана строка `model`, используем её
-3. **Smart Strategy** — если `model: "auto"` или не указан:
-   - Фильтруем по критериям (`tags`, `type`, `min_context_size`, `min_max_output_tokens`, `response_format`)
-   - Исключаем модели с открытым Circuit Breaker (OPEN, PERMANENTLY_UNAVAILABLE)
-   - Исключаем модели, превысившие `maxConcurrent` лимит
-   - Если указан `min_success_rate` — исключаем модели с низким success rate
-   - Если `prefer_fast: true` — выбираем модель с наименьшей latency
-   - Если `selection_mode`:
-     - `"best"` — выбираем модель с наивысшим весом (качество/скорость)
-     - `"top_n_random"` — случайный выбор среди топ-3 моделей по весу
-     - `"weighted_random"` (default) — взвешенное случайное распределение
-   - Иначе выполняем weighted random selection по `weight` × `successRate` × `latencyFactor`
-
-
-### Обработка ошибок и fallback
-
-1. При ошибке **429** (Rate Limit) — ретрай до `maxSameModelRetries` раз с задержкой + jitter (на той же модели)
-2. При **сетевых ошибках** (ENETUNREACH, ECONNRESET) — ретрай до `maxSameModelRetries` раз с задержкой (проблема может быть временной)
-3. При ошибках **4xx** (кроме 429 и 404) — прервать выполнение, вернуть ошибку клиенту
-4. При ошибке **404** — модель исключается (`PERMANENTLY_UNAVAILABLE`), переключаемся на следующую
-5. При ошибках **5xx, timeout** — переключиться на следующую модель
-6. При **сетевых ошибках провайдера** (ECONNREFUSED, EHOSTUNREACH, ENOTFOUND) — переключиться на следующую модель
-7. Повторяем до `maxModelSwitches` попыток (переключение между моделями)
-8. Если все бесплатные модели исчерпаны и `fallback.enabled = true` — используем платную модель (одна попытка без ретраев)
-9. Возвращаем результат с полной информацией о попытках в поле `_router`
-
-### Обработка различных кодов ошибок
-
-| Код ошибки | Действие | Circuit Breaker | Прерывает цикл? |
-|------------|----------|------------------|-----------------|
-| 404 (Not Found) | Модель не существует | `PERMANENTLY_UNAVAILABLE` | ❌ Нет (переключение) |
-| 429 (Rate Limit) | Ретрай с задержкой + jitter | Учитывается | ❌ Нет (ретрай) |
-| 5xx (500-599) | Переключиться на следующую модель | Учитывается, `OPEN` после threshold | ❌ Нет (переключение) |
-| Timeout | Переключиться на следующую модель | Учитывается, `OPEN` после threshold | ❌ Нет (переключение) |
-| 400 (Bad Request) | Вернуть ошибку клиенту | **Не влияет** | ✅ Да |
-| 401 (Unauthorized) | Вернуть ошибку клиенту | **Не влияет** | ✅ Да |
-| 403 (Forbidden) | Вернуть ошибку клиенту | **Не влияет** | ✅ Да |
-| Другие 4xx | Вернуть ошибку клиенту | **Не влияет** | ✅ Да |
-
-### Сетевые ошибки
-
-| Код ошибки | Описание | Действие | Circuit Breaker |
-|------------|----------|----------|-----------------|
-| ENETUNREACH | Сеть недостижима (локальная проблема) | Ретрай с задержкой | Учитывается |
-| ECONNRESET | Соединение сброшено | Ретрай с задержкой | Учитывается |
-| ECONNREFUSED | Соединение отклонено (провайдер недоступен) | Переключение | Учитывается, `OPEN` после threshold |
-| EHOSTUNREACH | Хост недостижим | Переключение | Учитывается, `OPEN` после threshold |
-| ENOTFOUND | DNS не может разрешить хост | Переключение | Учитывается, `OPEN` после threshold |
-| ETIMEDOUT | Таймаут соединения | Переключение | Учитывается, `OPEN` после threshold |
-
-**Примечания:**
-- **Ретрай** — повторная попытка на той же модели с задержкой + jitter
-- **Переключение** — немедленный переход к следующей модели без задержки
-- **4xx ошибки** (кроме 429) — проблемы с запросом/конфигурацией, не влияют на Circuit Breaker
-- **Timeout** не ретраится — если модель не отвечает за 30 секунд, скорее всего она перегружена
-- Только 404 переводит модель в состояние `PERMANENTLY_UNAVAILABLE`
-
-### Circuit Breaker состояния
-
-- **CLOSED** — нормальная работа, запросы разрешены
-- **OPEN** — circuit открыт после `failureThreshold` ошибок, запросы блокируются до истечения `cooldownPeriodMins`
-- **HALF_OPEN** — тестовые запросы для проверки восстановления
-- **PERMANENTLY_UNAVAILABLE** — модель вернула 404, исключена до рестарта сервиса
-
-
-### Rate Limiting
- 
-Проект поддерживает только **Rate Limiting на уровне моделей** (`modelRequestsPerMinute`) для защиты конкретных провайдеров/моделей от перегрузки (skew protection).
- 
-**Rate Limiting клиентов** (per-client/IP) должен осуществляться на уровне инфраструктуры (API Gateway, Nginx, Traefik, etc.), так как это не является ответственностью данного микросервиса.
- 
-При превышении лимита модели возвращается ошибка `429 Too Many Requests`.
-
-### Graceful Shutdown
-
-При получении сигнала завершения (SIGTERM/SIGINT) сервис:
-
-1. **Прекращает принимать новые запросы** — возвращает `503 Service Unavailable`
-2. **Ждёт завершения активных запросов** до 10 секунд
-3. **Отменяет незавершённые запросы** по истечении таймаута
-
-Клиент получает корректный JSON-ответ при отмене:
-
-```json
-{
-  "statusCode": 503,
-  "message": "Request cancelled: server is shutting down",
-  "error": "Service Unavailable"
-}
-```
-
-Это обеспечивает:
-- ✅ Короткие запросы успевают завершиться нормально
-- ✅ Длинные запросы получают понятный ответ об отмене
-- ✅ Предсказуемое время остановки для K8s/Docker (`terminationGracePeriodSeconds: 15`)
-
-### Admin API
-
-Сервис предоставляет API для мониторинга и управления (доступно по `GET /admin/...`):
-
-- `GET /admin/state` — текущее состояние всех моделей (Circuit Breaker, статистика)
-- `GET /admin/metrics` — общие метрики (uptime, requests, latency, fallbacks)
-- `GET /admin/rate-limits` — статус rate limiter (активные бакеты, конфиг)
-- `POST /admin/state/:modelName/reset` — сбросить состояние конкретной модели
-
-Пример метрик:
-
-```json
-{
-  "uptime": 3600,
-  "totalRequests": 1000,
-  "successfulRequests": 950,
-  "failedRequests": 50,
-  "fallbacksUsed": 5,
-  "avgLatency": 2300,
-  "modelsAvailable": 5
-}
-```
-
-## 🎨 Monitoring Dashboard
-
-Сервис включает современный vanilla JavaScript dashboard для мониторинга и тестирования (без внешних зависимостей).
-
-**Доступ:** `http://localhost:8080/ui/`
-
-### Возможности
-
-- **📊 Overview** — метрики в реальном времени:
-  - Общее количество запросов (успешных/неудачных)
-  - Средняя задержка по всем моделям
-  - Использование fallback
-  - Активные соединения
-  - Статус доступности моделей
-
-- **🎯 Models State** — подробная информация о моделях:
-  - Список всех настроенных моделей
-  - Circuit Breaker статусы (CLOSED/OPEN/HALF_OPEN/PERMANENTLY_UNAVAILABLE)
-  - Статистика по каждой модели: запросы, errors, latency, success rate
-  - Количество активных запросов
-
-- **🧪 API Tester** — тестирование запросов:
-  - Отправка тестовых запросов прямо из браузера
-  - Настройка модели, temperature, max tokens
-  - Просмотр ответов с метаданными роутера
-  - Поддержка Smart Strategy через `"auto"`
-
-- **⏱️ Rate Limits** — мониторинг rate limiting:
-  - Глобальные лимиты
-  - Per-provider лимиты
-  - Текущее использование vs лимиты
-
-## 🧪 Тестирование
-
-```bash
-# Unit тесты
-pnpm test
-
-# E2E тесты
-pnpm test:e2e
-
-# Тесты с coverage
-pnpm test:cov
-
-# Линтинг
-pnpm lint
-```
-
-См. подробности в `docs/dev.md`.
-
-## 🐳 Docker
-
-```bash
-# Сборка приложения
+pnpm install
+pnpm check   # lint, typecheck, format, tests
 pnpm build
-
-# Запуск через Docker Compose
-docker compose -f docker/docker-compose.yml up -d --build
 ```
 
-После запуска: `http://localhost:8080/api/v1/health`
+## Licence
 
-## 🔌 n8n Интеграция
-
-Микросервис поставляется с официальной n8n нодой для интеграции с LangChain workflows.
-
-### Установка n8n ноды
-
-Через интерфейс n8n (рекомендуется):
-
-1. Settings → Community Nodes
-2. Install a community node
-3. Введите: `n8n-nodes-bozonx-free-llm-router-microservice`
-4. Click Install
-
-Или вручную:
-
-```bash
-cd ~/.n8n/nodes
-npm install n8n-nodes-bozonx-free-llm-router-microservice
-```
-
-### Использование
-
-1. **Создайте credentials**:
-   - Credentials → New → "Free LLM Router API"
-   - Base URL: `http://your-service:8080/api/v1`
-   - Настройте аутентификацию (если используется)
-
-2. **Добавьте в workflow**:
-   - Добавьте ноду "Free LLM Router Model"
-   - Подключите к "Basic LLM Chain" или другим LangChain нодам
-   - Настройте параметры модели
-
-**Возможности:**
-- 🤖 Полная совместимость с LangChain
-- 🔄 Smart Strategy, конкретные модели, приоритетные списки
-- 🏷️ Фильтрация по тегам, типу, размеру контекста
-- ⚙️ Все OpenAI-совместимые параметры
-
-Подробности в [`n8n-nodes-bozonx-free-llm-router-microservice/README.md`](./n8n-nodes-bozonx-free-llm-router-microservice/README.md)
-
-## LLM Router Dashboard
-
-Vanilla JavaScript/HTML/CSS dashboard for monitoring and testing the Free LLM Router Microservice.
-
-### Features
-
-- **Real-time Monitoring**: Auto-refreshing metrics every 5 seconds
-- **Model State Tracking**: View all models and their circuit breaker states
-- **API Testing**: Test LLM requests directly from the browser
-- **Rate Limit Monitoring**: Track rate limiting status across providers
-- **Zero Dependencies**: Pure JavaScript, no frameworks required
-
-### Access
-
-The dashboard is served at the root path `/` of the microservice.
-
-Default URL: `http://localhost:8080/`
-
-### Tabs
-
-#### 📊 Overview
-- Total requests (successful/failed)
-- Average latency across all models
-- Fallback usage statistics
-- Active connections
-- Models availability status
-
-#### 🎯 Models State
-- View all configured models
-- Circuit breaker states (CLOSED, OPEN, HALF_OPEN, PERMANENTLY_UNAVAILABLE)
-- Per-model statistics:
-  - Total requests
-  - Success/Error counts
-  - Average latency
-  - Active requests
-  - Success rate
-
-#### 🧪 API Tester
-- Send test requests to the microservice
-- Configure model, temperature, max tokens
-- View formatted responses with metadata
-- Test both direct model selection and smart routing (use "auto")
-
-#### ⏱️ Rate Limits
-- Global rate limit status
-- Per-provider rate limits
-- Current usage vs limits for minute/hour windows
-
-### Configuration
-
-The dashboard automatically detects the API base path from the server configuration.
-It communicates with the microservice through the Admin API endpoints:
-
-- `/api/v1/health` - Service health check
-- `/api/v1/admin/metrics` - Overall metrics
-- `/api/v1/admin/state` - Model states
-- `/api/v1/admin/rate-limits` - Rate limiting status
-- `/api/v1/chat/completions` - LLM completion endpoint (for testing)
-
-### Development
-
-The dashboard consists of three files:
-- `index.html` - Structure and markup
-- `styles.css` - Modern dark theme styling
-- `app.js` - Dashboard logic and API communication
-
-All files are served statically from the `/public` directory by the `DashboardController`.
-
-### Design
-
-- Modern dark mode with glassmorphism effects
-- Smooth animations and micro-interactions
-- Responsive design for mobile and desktop
-- Color-coded status indicators
-- Real-time auto-refresh
-
-
-## 🚀 Дорожная карта
-
-### v1.1
-- [x] Загрузка списка моделей по URL
-- [x] Smart Strategy — умный алгоритм выбора с учётом приоритетов и весов
-- [x] Rate Limiting — защита от перегрузки
-- [x] Admin API — мониторинг состояния системы
-- [x] Статистика запросов
-- [x] n8n node
-- [x] **Vanilla UI Dashboard** — мониторинг и тестирование сервиса (доступно на `/ui/`)
-- [x] Поддержка function calling / tools
-- [x] Streaming (SSE) поддержка
-- [x] **Vision support** — поддержка изображений в запросах (multimodal content)
-
-### v1.2
-
-- [ ] OpenTelemetry интеграция
-- [ ] Мониторинг
-
-### v2.0
-- [ ] Redis and scaling
-- [ ] Кэширование ответов
-
-## 📄 Лицензия
-
-MIT
+MIT.

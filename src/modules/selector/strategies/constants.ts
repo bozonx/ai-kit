@@ -1,6 +1,0 @@
-export const MIN_LATENCY_MS_FOR_CALCULATION = 100;
-
-export const DEFAULT_MODEL_WEIGHT = 1;
-export const DEFAULT_SUCCESS_RATE = 1.0;
-
-export const LATENCY_NORMALIZATION_FACTOR = 1000;

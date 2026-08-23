@@ -1,0 +1,154 @@
+# Example model catalog.
+#
+# This file is an example, not a default: the catalog is data owned by whoever
+# uses the library, because prices, available providers and the choice of which
+# model answers which kind of request are deployment decisions, not library
+# decisions. Copy it, keep it next to your application, and validate it on
+# startup with `Catalog.fromFile`.
+#
+# Prices are per million tokens in micro-units of the currency, 1_000_000 = 1 USD.
+# So $0.30 per million input tokens is 300000. Integers only — money in floats
+# is a discrepancy that shows up months later in an invoice nobody can reconcile.
+#
+# Verify prices against the provider before trusting these numbers; they are
+# written down here to show the shape, and providers change them.
+
+models:
+  - name: gemini-2.5-flash
+    provider: google
+    model: gemini-2.5-flash
+    tier: standard
+    contextSize: 1048576
+    maxOutputTokens: 65536
+    modalities:
+      input: [text, image, audio, pdf]
+      output: [text]
+    capabilities:
+      tools: true
+      structuredOutput: true
+      promptCaching: true
+      reasoning: true
+      streaming: true
+    pricing:
+      version: '2026-08'
+      inputPerMTok: 300000
+      outputPerMTok: 2500000
+      cachedInputPerMTok: 75000
+    weight: 10
+    available: true
+    tags: [default, multilingual]
+
+  - name: gemini-2.5-flash-lite
+    provider: google
+    model: gemini-2.5-flash-lite
+    tier: economy
+    contextSize: 1048576
+    maxOutputTokens: 65536
+    modalities:
+      input: [text, image, audio, pdf]
+      output: [text]
+    capabilities:
+      tools: true
+      structuredOutput: true
+      promptCaching: true
+      reasoning: false
+      streaming: true
+    pricing:
+      version: '2026-08'
+      inputPerMTok: 100000
+      outputPerMTok: 400000
+      cachedInputPerMTok: 25000
+    weight: 10
+    available: true
+    tags: [cheap, bulk]
+
+  - name: gemini-2.5-pro
+    provider: google
+    model: gemini-2.5-pro
+    tier: premium
+    contextSize: 1048576
+    maxOutputTokens: 65536
+    modalities:
+      input: [text, image, audio, video, pdf]
+      output: [text]
+    capabilities:
+      tools: true
+      structuredOutput: true
+      promptCaching: true
+      reasoning: true
+      streaming: true
+    pricing:
+      version: '2026-08'
+      inputPerMTok: 1250000
+      outputPerMTok: 10000000
+      cachedInputPerMTok: 312500
+    weight: 5
+    available: true
+    tags: [reasoning, long-context]
+
+  # The long tail goes through OpenRouter: one key, one adapter, everything else.
+  - name: claude-sonnet-4.5
+    provider: openrouter
+    model: anthropic/claude-sonnet-4.5
+    tier: premium
+    contextSize: 200000
+    maxOutputTokens: 64000
+    modalities:
+      input: [text, image, pdf]
+      output: [text]
+    capabilities:
+      tools: true
+      structuredOutput: true
+      promptCaching: true
+      reasoning: true
+      streaming: true
+    pricing:
+      version: '2026-08'
+      inputPerMTok: 3000000
+      outputPerMTok: 15000000
+      cachedInputPerMTok: 300000
+    weight: 5
+    available: true
+    tags: [agentic, writing]
+
+  - name: gpt-4.1-mini
+    provider: openrouter
+    model: openai/gpt-4.1-mini
+    tier: standard
+    contextSize: 1047576
+    maxOutputTokens: 32768
+    modalities:
+      input: [text, image]
+      output: [text]
+    capabilities:
+      tools: true
+      structuredOutput: true
+      promptCaching: true
+      reasoning: false
+      streaming: true
+    pricing:
+      version: '2026-08'
+      inputPerMTok: 400000
+      outputPerMTok: 1600000
+      cachedInputPerMTok: 100000
+    weight: 5
+    available: true
+    tags: [fallback]
+
+# Which models are candidates for which kind of work, in order. The first one
+# that is healthy and fits the request answers; the rest are the fallback chain.
+#
+# This lives in the catalog rather than in code on purpose: changing the model
+# behind a product feature must not require a release of the library.
+taskClasses:
+  rewrite: [gemini-2.5-flash, gpt-4.1-mini]
+  translate: [gemini-2.5-flash, gpt-4.1-mini]
+  summarize: [gemini-2.5-flash, gpt-4.1-mini]
+  tags: [gemini-2.5-flash-lite, gemini-2.5-flash]
+  alt_text: [gemini-2.5-flash-lite, gemini-2.5-flash]
+  generate_post: [gemini-2.5-flash, claude-sonnet-4.5]
+  chat_simple: [gemini-2.5-flash, gpt-4.1-mini]
+  chat_agentic: [gemini-2.5-pro, claude-sonnet-4.5]
+  diagnose: [gemini-2.5-pro, claude-sonnet-4.5]
+  bulk_plan: [gemini-2.5-pro, claude-sonnet-4.5]
+  vision: [gemini-2.5-flash, gemini-2.5-pro]
