@@ -81,13 +81,12 @@ const catalog = Catalog.fromYaml(yaml);
 const signals = { estimatedInputTokens: 1000 };
 
 describe('selectCandidates, auto mode', () => {
-  it('keeps the catalog order and marks only the first as chosen', () => {
+  it('keeps fallbacks inside the first eligible tier', () => {
     const result = selectCandidates({ mode: 'auto', taskClass: 'chat_simple', signals }, catalog);
 
-    expect(result.map(c => c.model.name)).toEqual(['cheap', 'standard', 'standard-alt', 'fancy']);
-    expect(result.map(c => c.routedBy)).toEqual(['auto', 'fallback', 'fallback', 'fallback']);
+    expect(result.map(c => c.model.name)).toEqual(['cheap']);
+    expect(result.map(c => c.routedBy)).toEqual(['auto']);
   });
-
   it('drops a model that cannot read images when the prompt has them', () => {
     const result = selectCandidates(
       { mode: 'auto', taskClass: 'vision', signals: { ...signals, hasImages: true } },

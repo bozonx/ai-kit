@@ -124,8 +124,10 @@ export function selectCandidates(input: PolicyInput, catalog: Catalog): ModelCan
     }
   }
 
-  const candidates = nominated
-    .filter(eligible)
+  const eligibleNominated = nominated.filter(eligible);
+  const firstTier = eligibleNominated[0]?.tier;
+  const candidates = eligibleNominated
+    .filter(model => model.tier === firstTier)
     .map(
       (model, index): ModelCandidate => ({ model, routedBy: index === 0 ? 'auto' : 'fallback' }),
     );

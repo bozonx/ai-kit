@@ -312,4 +312,33 @@ describe('stream', () => {
     expect(recorded[0]?.costMicros).toBe(50);
     expect(recorded[0]?.status).toBe('error');
   });
+
+  it('estimates usage when an aborted stream omits final accounting', async () => {
+    const recorded: UsageEvent[] = [];
+    const abortController = new AbortController();
+    const { factory } = fakeProvider({
+      doStream: () =>
+        textStream([
+          { type: 'text-start', id: '1' },
+          { type: 'text-delta', id: '1', delta: 'a partial answer' },
+          { type: 'text-delta', id: '1', delta: ' that should not arrive' },
+          { type: 'finish', finishReason: 'stop', usage },
+        ]),
+    });
+    const kit = createAiKit({
+      catalog,
+      keys,
+      retry,
+      providers: { fake: factory },
+      usage: { record: event => Promise.resolve(void recorded.push(event)) },
+    });
+
+    for await (const part of kit.stream({ policy, messages, abortSignal: abortController.signal })) {
+      if (part.type === 'text-delta') abortController.abort();
+    }
+
+    expect(recorded[0]?.status).toBe('aborted');
+    expect(recorded[0]?.usage.outputTokens).toBeGreaterThan(0);
+    expect(recorded[0]?.costMicros).toBeGreaterThan(0);
+  });
 });

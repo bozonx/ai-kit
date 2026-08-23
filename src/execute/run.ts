@@ -8,7 +8,7 @@ import {
 import type { z } from 'zod';
 
 import type { Catalog } from '../catalog/catalog.js';
-import { calculateCost } from '../catalog/pricing.js';
+import { calculateCost, estimateTokens } from '../catalog/pricing.js';
 import type { ModelDefinition } from '../catalog/schema.js';
 import { AiError, AllCandidatesFailedError, StreamInterruptedError } from '../errors.js';
 import { selectCandidates, type ModelCandidate, type PolicyInput } from '../policy/policy.js';
@@ -578,6 +578,18 @@ export async function* runStream(
     if (emitted) failure = new StreamInterruptedError(text, { cause: failure });
   }
   if (failure?.kind === 'aborted') status = 'aborted';
+
+  // Providers commonly omit final usage when a stream is cancelled. Billing
+  // zero after visible output would make "generate and cancel" free, so use a
+  // conservative text estimate when no provider accounting arrived.
+  if (emitted && usage.outputTokens === 0) {
+    const input = [request.system ?? '', JSON.stringify(request.messages)].join('\n');
+    usage = {
+      ...usage,
+      inputTokens: usage.inputTokens || estimateTokens(input),
+      outputTokens: estimateTokens(text),
+    };
+  }
 
   const data = accounting(candidate, usage, outcome.attempts, deps.clock.now() - startedAt);
   // Anything that produced output is paid for, including a stream somebody
