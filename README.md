@@ -11,11 +11,10 @@ It deliberately holds nothing about tenants, users, projects, permissions,
 storage or money. If a component needs one of those words, it belongs to the
 application, not here — and a test fails when it creeps in.
 
-> **Status: foundation.** The catalog, pricing, ports, error taxonomy, stream
-> vocabulary and the in-memory state store are in place and tested. Provider
-> adapters, the policy engine and call execution are the next step; until they
-> land, `createAiKit` does not exist and nothing calls a model. The plan is
-> `dev_docs/ai-kit-refactor-plan.md`.
+> **Status: 0.1.0.** The package includes the catalog, model-selection policy,
+> provider registry, generation and streaming execution with retries, prompt
+> assembly, cost accounting, ports, error taxonomy, and an in-memory state
+> store. It is ready for use with a consumer-owned model catalog.
 
 ## Install
 

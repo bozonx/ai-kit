@@ -1,167 +1,28 @@
 # Changelog
 
-Все заметные изменения в проекте будут документированы в этом файле.
+All notable changes to this project are documented in this file.
 
-Формат основан на [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
-и этот проект придерживается [Semantic Versioning](https://semver.org/lang/ru/).
-
-## [Unreleased] — библиотека вместо микросервиса
-
-Пакет переименован в `@bozonx/ai-kit` и перестал быть сетевым сервисом. Причина не в
-моде на библиотеки: выбор модели — чистая функция от каталога и состояния, и заворачивать
-её в HTTP значит платить латентностью и точкой отказа за то, что считается в процессе.
-В агентных сценариях это 5–15 вызовов на один запрос пользователя.
-
-### Удалено
-
-- NestJS-приложение целиком: `main.ts`, модули `router`, `providers`, `selector`, `models`,
-  `state`, `rate-limiter`, `admin`, `dashboard`, `health`, `shutdown`, конфигурация на
-  class-validator, Docker-образ и статика. Последнее состояние сервиса — в теге
-  `legacy-service`.
-- Собственные HTTP-клиенты провайдеров (~900 строк). Их работу берёт на себя AI SDK.
-- `scripts/fetch-models.ts` — 800 строк эвристик, размечавших бесплатные модели
-  OpenRouter. Каталог теперь курируемый, а скрипт подтягивания цен пишется заново,
-  когда понадобится длинный хвост.
-- n8n-нода и всё, что существовало ради неё, включая HTTP-обёртку в планах.
-
-### Добавлено
-
-- **Каталог моделей как главная сущность.** Zod-схема с ценами, модальностями,
-  `tier`, `capabilities` и сопоставлением классов задач с кандидатами. Валидация при
-  загрузке падает громко: каталог с опечаткой в цене — это неверный счёт, а не
-  неверная строка.
-- **Расчёт стоимости** с версионированием прайса. Кэшированный ввод считается один раз
-  по своей цене, а не поверх обычного; округление вверх; целые микро-единицы валюты
-  (1 000 000 = 1 USD) от начала до конца.
-- **Порты**: `KeyProvider`, `UsageSink`, `TraceSink`, `StateStore`, `Clock`. Всё, кроме
-  ключей, необязательно. `MemoryStateStore` — в пакете.
-- **Классификация ошибок** с явным ответом на вопрос «повторять ли», и
-  `StreamInterruptedError`, несущий частичный текст: пользователь его уже прочитал.
-- **Словарь частей стрима**, один на сервер и клиент.
-- **Инварианты как тест**: `src/` не импортирует фреймворк и ORM, не читает
-  `process.env`, не логирует сам и не знает слов из чужой предметной области.
-
-## [1.0.0] - 2025-12-12
-
-### Добавлено
-
-#### Фаза 1: Инфраструктура и конфигурация
-- Добавлены зависимости: `js-yaml`, `@nestjs/axios`, `axios`
-- Созданы TypeScript интерфейсы для моделей и конфигурации
-- Реализован загрузчик YAML конфигурации с поддержкой переменных окружения
-- Добавлены конфигурационные файлы: `config/config.yaml`, `config/models.yaml`
-- Обновлены переменные окружения: `ROUTER_CONFIG_PATH`, `OPENROUTER_API_KEY`, `DEEPSEEK_API_KEY`
-
-#### Фаза 2: Модуль моделей (Models)
-- Создан `ModelsService` для загрузки и управления списком моделей
-- Реализованы методы фильтрации моделей по тегам, типу и размеру контекста
-- Создан `ModelsModule` с экспортом `ModelsService`
-- Добавлены unit тесты для `ModelsService`
-
-#### Фаза 3: Модуль провайдеров (Providers)
-- Определен базовый интерфейс `LlmProvider` для унификации провайдеров
-- Создан абстрактный `BaseProvider` с общей логикой HTTP-запросов и обработки ошибок
-- Реализован `OpenRouterProvider` для интеграции с OpenRouter API
-- Реализован `DeepSeekProvider` для интеграции с DeepSeek API
-- Создан `ProvidersModule` с динамической регистрацией провайдеров
-- Добавлены unit тесты для провайдеров
-
-#### Фаза 4: Модуль селектора (Selector)
-- Определен интерфейс `SelectionStrategy` для алгоритмов выбора
-- Реализована стратегия `RoundRobinStrategy` для round-robin ротации моделей
-- Создан `SelectorService` для выбора моделей с учетом критериев и исключений
-- Создан `SelectorModule` с зависимостью от `ModelsModule`
-- Добавлены unit тесты для логики выбора
-
-#### Фаза 5: Модуль роутера (Router)
-- Созданы DTO для запроса (`ChatCompletionRequestDto`) и ответа (`ChatCompletionResponseDto`)
-- Реализован `RouterService` с логикой:
-  - Автоматический выбор модели
-  - Retry с jitter при rate limit (429)
-  - Fallback между бесплатными моделями
-  - Fallback на платную модель при исчерпании попыток
-  - Сбор метаданных о попытках и ошибках
-- Создан `RouterController` с endpoints:
-  - `POST /api/v1/chat/completions` — OpenAI-совместимый chat completion
-  - `GET /api/v1/models` — список доступных моделей
-- Интеграция `RouterModule` в `AppModule`
-- Добавлены unit тесты для `RouterService` и `RouterController`
-
-#### Фаза 6: E2E тесты и финализация
-- Созданы E2E тесты для API endpoints
-- Полностью обновлена документация в `README.md`:
-  - Описание возможностей микросервиса
-  - Руководство по быстрому старту
-  - Детальная конфигурация
-  - API Reference с примерами
-  - Логика работы и обработки ошибок
-  - Дорожная карта
-- Создан `CHANGELOG.md` для отслеживания изменений
-
-### Возможности v1.0.0
-
-- ✅ OpenAI-совместимый API для chat completions
-- ✅ Автоматический выбор модели (round-robin)
-- ✅ Интеллектуальный retry с обработкой rate limits
-- ✅ Fallback на платную модель при исчерпании бесплатных
-- ✅ Фильтрация моделей по тегам, типу, размеру контекста
-- ✅ Поддержка провайдеров: OpenRouter, DeepSeek
-- ✅ Прозрачная метаинформация о попытках и ошибках
-- ✅ Полная документация и тесты
-
-### Технические детали
-
-- **Node.js**: 22+
-- **Framework**: NestJS + Fastify
-- **Package Manager**: pnpm
-- **Логирование**: Pino
-- **Тестирование**: Jest (unit + e2e)
-- **Конфигурация**: YAML с поддержкой переменных окружения
+The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-### Добавлено
+## [0.1.0] - 2026-08-28
 
-#### n8n Интеграция
-- Создан пакет n8n community node: `n8n-nodes-bozonx-free-llm-router-microservice`
-- Реализована нода "Free LLM Router Model" для LangChain workflows
-- Добавлены credentials с поддержкой None, Basic Auth, Bearer Token
-- Реализовано три режима выбора моделей:
-  - Auto (Smart Strategy)
-  - Specific Model (конкретная модель)
-  - Priority List (приоритетный список)
-- Поддержка всех OpenAI-совместимых параметров
-- Полная поддержка фильтрации (tags, type, context size, success rate)
-- Создана документация: README, QUICKSTART, DEVELOPMENT
-- Добавлена иконка и конфигурационные файлы
+### Added
 
-#### Function Calling
-- Реализована полная поддержка OpenAI-совместимых function calling / tools
-- Обновлены DTO запросов и ответов
-- Интеграция с провайдерами OpenRouter и DeepSeek для передачи инструментов
-- Обновлена документация и добавлены примеры использования
+- A reusable TypeScript library published as `@bozonx/ai-kit`.
+- A validated, consumer-owned model catalog with pricing and capability data.
+- Model-selection policies, provider registry adapters, retrying generation and
+  streaming execution, cost accounting, and prompt assembly for untrusted data.
+- Ports for keys, state, usage, traces, and time, plus `MemoryStateStore`.
+- Public stream-part and error vocabularies.
+- Tests that enforce the package boundary: no framework or ORM imports,
+  environment reads, logging, or product-domain terms in `src/`.
 
-### Исправлено
+### Changed
 
-- Исправлено поведение `OpenRouterProvider` в режиме JSON (`response_format: json_object/json_schema`): reasoning больше не попадает в `choices[0].message.content`, ответ нормализуется до валидного JSON для корректной работы structured output парсеров.
+- Replaced the former HTTP microservice with an in-process library. The legacy
+  service remains available through the `legacy-service` Git tag.
 
-### Планируется в v1.1
-- Streaming (SSE) поддержка для chat completions
-- Загрузка списка моделей по URL
-- Vanilla UI для просмотра моделей и статистики
-
-### Планируется в v1.2
-- Дополнительные алгоритмы выбора моделей (random, weighted, least-errors, fastest-response)
-- Статистика запросов и выбор на основе метрик
-- Поддержка vision (изображения в сообщениях)
-
-### Планируется в v1.3
-- OpenTelemetry интеграция для метрик и трейсинга
-- Кэширование ответов для оптимизации
-- Мониторинг и алерты
-
----
-
-[1.0.0]: https://github.com/bozonx/free-llm-router-microservice/releases/tag/v1.0.0
-[Unreleased]: https://github.com/bozonx/free-llm-router-microservice/compare/v1.0.0...HEAD
-
+[0.1.0]: https://github.com/bozonx/ai-kit/releases/tag/v0.1.0

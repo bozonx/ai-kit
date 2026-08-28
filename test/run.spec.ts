@@ -333,7 +333,11 @@ describe('stream', () => {
       usage: { record: event => Promise.resolve(void recorded.push(event)) },
     });
 
-    for await (const part of kit.stream({ policy, messages, abortSignal: abortController.signal })) {
+    for await (const part of kit.stream({
+      policy,
+      messages,
+      abortSignal: abortController.signal,
+    })) {
       if (part.type === 'text-delta') abortController.abort();
     }
 
