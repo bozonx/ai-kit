@@ -12,14 +12,7 @@
   "bugs": {
     "url": "https://github.com/bozonx/ai-kit/issues"
   },
-  "homepage": "https://github.com/bozonx/ai-kit#readme",
-  "keywords": [
-    "ai",
-    "ai-sdk",
-    "llm",
-    "model-catalog",
-    "typescript"
-  ],
+  "homepage": "https://github.com/bozonx/ai-kit",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
@@ -32,7 +25,6 @@
   "files": [
     "dist",
     "models.example.yaml",
-    "README.md",
     "LICENSE"
   ],
   "scripts": {
