@@ -109,13 +109,57 @@ export function estimateCost(
 }
 
 /**
+ * Characters per token for text in the Latin script.
+ *
+ * Wrong for every language and right enough for choosing a model and sizing a
+ * reservation. Anything that has to be exact uses the count the provider
+ * returns afterwards.
+ */
+const LATIN_CHARS_PER_TOKEN = 4;
+
+/**
+ * Characters per token for scripts the common BPE vocabularies barely cover.
+ *
+ * Cyrillic, Greek, Hebrew, Arabic and the Indic scripts are tokenized far more
+ * finely than Latin — frequently one token per character, rarely better than
+ * two. Estimating them at four characters a token understates the real count
+ * by two to three times, and the two places that matter both fail quietly when
+ * it does: a reservation that is too small has already let the spend through,
+ * and a chat history budget that is too generous sends three times the context
+ * it was told to. Two is the conservative end of the observed range.
+ */
+const DENSE_SCRIPT_CHARS_PER_TOKEN = 2;
+
+/**
+ * CJK is denser still: roughly one token per character, sometimes fewer for
+ * common words. One is the safe assumption.
+ */
+const CJK_CHARS_PER_TOKEN = 1;
+
+// Named by script rather than by code point range: the ranges are unreadable,
+// and a combining mark is a character the tokenizer pays for like any other.
+const DENSE_SCRIPT =
+  /[\p{Script=Cyrillic}\p{Script=Greek}\p{Script=Hebrew}\p{Script=Arabic}\p{Script=Devanagari}\p{Script=Bengali}\p{Script=Tamil}\p{Script=Telugu}\p{Script=Thai}]/gu;
+const CJK_SCRIPT = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/gu;
+
+/**
  * Rough token count for a piece of text.
  *
- * Four characters to a token is wrong for every language and right enough for
- * choosing a model and sizing a reservation. Anything that has to be exact
- * uses the count the provider returns afterwards.
+ * Counts each script at its own density rather than assuming everything reads
+ * like English. Still an estimate, and still deliberately on the high side:
+ * both callers — the pre-call reservation and the chat history budget — are
+ * safe when it overshoots and quietly wrong when it undershoots.
  */
 export function estimateTokens(text: string): number {
   if (!text) return 0;
-  return Math.ceil(text.length / 4);
+
+  const cjkChars = text.match(CJK_SCRIPT)?.length ?? 0;
+  const denseChars = text.match(DENSE_SCRIPT)?.length ?? 0;
+  const latinChars = Math.max(0, text.length - cjkChars - denseChars);
+
+  return Math.ceil(
+    cjkChars / CJK_CHARS_PER_TOKEN +
+      denseChars / DENSE_SCRIPT_CHARS_PER_TOKEN +
+      latinChars / LATIN_CHARS_PER_TOKEN,
+  );
 }

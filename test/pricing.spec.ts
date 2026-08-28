@@ -145,4 +145,23 @@ describe('estimateTokens', () => {
     expect(estimateTokens('abcd')).toBe(1);
     expect(estimateTokens('abcde')).toBe(2);
   });
+
+  it('counts scripts the tokenizers barely cover at their own density', () => {
+    // Twelve Cyrillic characters are nothing like three tokens.
+    expect(estimateTokens('Привет, мир!')).toBeGreaterThan(estimateTokens('Hello, world'));
+    expect(estimateTokens('привет')).toBe(3);
+    // CJK is roughly one token per character.
+    expect(estimateTokens('你好世界')).toBe(4);
+  });
+
+  it('adds up a text that mixes scripts', () => {
+    // 4 Latin ("code") + 6 Cyrillic ("привет") -> 1 + 3
+    expect(estimateTokens('codeпривет')).toBe(4);
+  });
+
+  it('never understates a dense script, which is the failure that costs money', () => {
+    const russian = 'Это довольно длинный текст на русском языке для проверки оценки токенов.';
+    // The old four-characters-a-token guess, which this must beat.
+    expect(estimateTokens(russian)).toBeGreaterThan(Math.ceil(russian.length / 4));
+  });
 });
