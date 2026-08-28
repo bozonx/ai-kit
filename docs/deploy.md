@@ -37,10 +37,13 @@ password when npm requests it.
    ```
 
 3. Inspect the exact npm archive. `prepack` removes old build output and
-   rebuilds `dist`, so this is also a clean-build check.
+   rebuilds `dist`, so packing is also a clean-build check. `pnpm pack` has no
+   dry-run mode; write the disposable archive to a temporary directory.
 
    ```bash
-   npm pack --dry-run
+   pack_dir=$(mktemp -d)
+   pnpm pack --pack-destination "$pack_dir"
+   tar -tzf "$pack_dir"/*.tgz
    ```
 
    Confirm that it contains `dist/index.js`, `dist/index.d.ts`,
@@ -49,7 +52,7 @@ password when npm requests it.
 4. Publish the public scoped package.
 
    ```bash
-   npm publish
+   pnpm publish
    ```
 
    `publishConfig.access` already sets the package access to `public`.
@@ -58,7 +61,7 @@ password when npm requests it.
 5. Verify the release and push the Git version metadata.
 
    ```bash
-   npm view @bozonx/ai-kit version
+   pnpm view @bozonx/ai-kit version
    git push origin main --follow-tags
    ```
 
