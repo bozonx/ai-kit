@@ -92,6 +92,14 @@ export interface UsageEvent {
   model: string;
   routedBy: RoutedBy;
   usage: TokenUsage;
+  /**
+   * Seconds of audio the call transcribed. Zero for everything else.
+   *
+   * Speech is billed by the second and text by the token, and a consumer that
+   * has to report on both needs each in its own column — deriving one from a
+   * cost is how a price change rewrites history.
+   */
+  audioSeconds: number;
   /** What the call cost us, in micro-units of the currency. 1_000_000 = 1 USD. */
   costMicros: number;
   priceVersion: string;

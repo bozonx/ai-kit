@@ -1,6 +1,6 @@
 import type { Catalog } from '../catalog/catalog.js';
 import { estimateCost } from '../catalog/pricing.js';
-import type { ModelDefinition, TaskClass } from '../catalog/schema.js';
+import { kindOfTaskClass, type ModelDefinition, type TaskClass } from '../catalog/schema.js';
 import { NoSuitableModelError } from '../errors.js';
 import type { RoutedBy } from '../ports.js';
 import { parseModelInput } from '../utils/model-ref.js';
@@ -18,6 +18,14 @@ import { parseModelInput } from '../utils/model-ref.js';
 /** What the request looks like, in the terms a candidate can be filtered on. */
 export interface PolicySignals {
   estimatedInputTokens: number;
+  /**
+   * BCP-47 tag of the language the request is in, when it is known.
+   *
+   * Drops every candidate that does not claim it. Without this filter a cheap
+   * model eventually gets handed a language it was never trained on and answers
+   * anyway, which is worse than refusing.
+   */
+  language?: string;
   /** Images in the prompt. Drops every candidate that cannot read them. */
   hasImages?: boolean;
   needsTools?: boolean;
@@ -25,6 +33,29 @@ export interface PolicySignals {
   needsStreaming?: boolean;
   /** Output the caller intends to ask for, for the context-window check. */
   maxOutputTokens?: number;
+  /** Speech: the answer has to arrive while the person is still speaking. */
+  needsRealtime?: boolean;
+  /** Speech: word-level timings, without which subtitles cannot be aligned. */
+  needsWordTimings?: boolean;
+  /** Speech: who said which line. */
+  needsDiarization?: boolean;
+}
+
+/**
+ * Whether a model claims a language.
+ *
+ * Compared on the primary subtag, so a model that says `es` serves a request
+ * for `es-AR`: the region is a matter of which provider is better at it, and
+ * that is expressed by the order of candidates rather than by exclusion.
+ */
+export function speaksLanguage(model: ModelDefinition, language?: string): boolean {
+  if (!language || model.languages.length === 0) return true;
+  const wanted = primarySubtag(language);
+  return model.languages.some(claimed => primarySubtag(claimed) === wanted);
+}
+
+function primarySubtag(tag: string): string {
+  return tag.trim().toLowerCase().split(/[-_]/)[0] ?? '';
 }
 
 export interface PolicyInput {
@@ -53,19 +84,34 @@ export interface ModelCandidate {
 
 /** Whether one model can serve one request at all. */
 export function fitsSignals(model: ModelDefinition, signals: PolicySignals): boolean {
+  if (!speaksLanguage(model, signals.language)) return false;
+
+  if (model.kind === 'stt') {
+    const capabilities = model.sttCapabilities;
+    if (signals.needsRealtime && !capabilities?.realtime) return false;
+    if (signals.needsWordTimings && !capabilities?.wordTimings) return false;
+    if (signals.needsDiarization && !capabilities?.diarization) return false;
+    return true;
+  }
+
   if (signals.hasImages && !model.modalities.input.includes('image')) return false;
   if (signals.needsTools && !model.capabilities.tools) return false;
   if (signals.needsStructuredOutput && !model.capabilities.structuredOutput) return false;
   if (signals.needsStreaming && !model.capabilities.streaming) return false;
 
-  const wantedOutput = Math.min(signals.maxOutputTokens ?? 0, model.maxOutputTokens);
-  if (signals.estimatedInputTokens + wantedOutput > model.contextSize) return false;
+  const maxOutput = model.maxOutputTokens ?? 0;
+  const contextSize = model.contextSize ?? 0;
+  const wantedOutput = Math.min(signals.maxOutputTokens ?? 0, maxOutput);
+  if (signals.estimatedInputTokens + wantedOutput > contextSize) return false;
 
   return true;
 }
 
 function withinBudget(model: ModelDefinition, input: PolicyInput): boolean {
   if (!input.budget) return true;
+  // Speech is budgeted by the caller against a known duration, which is a
+  // better number than anything guessable from the request shape here.
+  if (model.kind === 'stt') return true;
   const worstCase = estimateCost(
     model,
     input.signals.estimatedInputTokens,
@@ -94,10 +140,16 @@ export function selectCandidates(input: PolicyInput, catalog: Catalog): ModelCan
     const picked: ModelCandidate[] = [];
     const seen = new Set<string>();
 
+    const wantedKind = kindOfTaskClass(input.taskClass);
+
     for (const ref of requested.refs) {
       const model = catalog.find(ref.name);
       if (!model?.available) continue;
       if (ref.provider && model.provider !== ref.provider) continue;
+      // A pinned model is honoured even when it looks like a poor fit, but not
+      // when it is the wrong kind of thing entirely: no amount of asking makes
+      // a language model transcribe an hour of audio.
+      if (model.kind !== wantedKind) continue;
       if (seen.has(model.name)) continue;
       seen.add(model.name);
       picked.push({ model, routedBy: 'user' });

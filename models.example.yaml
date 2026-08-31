@@ -135,6 +135,95 @@ models:
     available: true
     tags: [fallback]
 
+  # Speech-to-text. Priced by the hour of audio rather than by the token, which
+  # is why `sttPricing` is a separate block and not a variant of `pricing` — the
+  # two are never both present, and the schema refuses a model that has both.
+
+  - name: groq-whisper-turbo
+    kind: stt
+    provider: groq
+    model: whisper-large-v3-turbo
+    tier: economy
+    sttCapabilities:
+      realtime: false
+      wordTimings: true
+      diarization: false
+      punctuation: true
+      keyterms: true
+      languageDetection: true
+    sttPricing:
+      version: '2026-08'
+      perAudioHourMicros: 40000
+    weight: 10
+    available: true
+    tags: [cheap, batch]
+
+  - name: assemblyai-universal
+    kind: stt
+    provider: assemblyai
+    model: universal
+    tier: standard
+    sttCapabilities:
+      realtime: false
+      wordTimings: true
+      diarization: true
+      punctuation: true
+      keyterms: true
+      languageDetection: true
+    sttPricing:
+      version: '2026-08'
+      perAudioHourMicros: 210000
+      diarizationPerAudioHourMicros: 20000
+    weight: 10
+    available: true
+    tags: [batch]
+
+  - name: assemblyai-streaming
+    kind: stt
+    provider: assemblyai
+    model: universal-streaming
+    tier: standard
+    sttCapabilities:
+      realtime: true
+      wordTimings: true
+      diarization: false
+      punctuation: true
+      keyterms: true
+      languageDetection: false
+    sttPricing:
+      version: '2026-08'
+      perAudioHourMicros: 450000
+      perAudioHourRealtimeMicros: 450000
+    # A live session is billed on the time it is open, not on the speech it
+    # carried. Silence costs the same as talking, which is a product decision
+    # before it is a pricing one.
+    languages: [en, es, fr, de, it, pt, nl]
+    weight: 10
+    available: true
+    tags: [realtime]
+
+  - name: deepgram-nova-3
+    kind: stt
+    provider: deepgram
+    model: nova-3
+    tier: standard
+    sttCapabilities:
+      realtime: true
+      wordTimings: true
+      diarization: true
+      punctuation: true
+      keyterms: true
+      languageDetection: true
+    sttPricing:
+      version: '2026-08'
+      perAudioHourMicros: 260000
+      perAudioHourRealtimeMicros: 460000
+      diarizationPerAudioHourMicros: 0
+    weight: 5
+    available: true
+    tags: [fallback, realtime]
+
+
 # Which models are candidates for which kind of work, in order. The first one
 # that is healthy and fits the request answers; the rest are the fallback chain.
 #
@@ -152,3 +241,12 @@ taskClasses:
   diagnose: [gemini-2.5-pro, claude-sonnet-4.5]
   bulk_plan: [gemini-2.5-pro, claude-sonnet-4.5]
   vision: [gemini-2.5-flash, gemini-2.5-pro]
+  # Speech. A fallback never crosses a tier, so the economy model is not
+  # nominated here: it would be the only candidate and there would be nothing
+  # to fall back to. It stays reachable by name, which is how a free tier is
+  # pinned to it.
+  dictation: [assemblyai-streaming, deepgram-nova-3]
+  transcription: [assemblyai-universal, deepgram-nova-3]
+  # Subtitles need word timings and speakers, so only models that claim both
+  # belong on this list.
+  subtitles: [assemblyai-universal, deepgram-nova-3]

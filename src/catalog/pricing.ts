@@ -1,4 +1,5 @@
 import type { TokenUsage } from '../ports.js';
+import { CatalogError } from '../errors.js';
 import type { ModelDefinition } from './schema.js';
 
 /**
@@ -51,6 +52,9 @@ export function calculateCost(
   flat: FlatUsage = {},
 ): CostBreakdown {
   const pricing = model.pricing;
+  if (!pricing) {
+    throw new CatalogError(`Model "${model.name}" has no per-token pricing`);
+  }
 
   const cachedTokens = Math.max(0, Math.min(usage.cachedInputTokens, usage.inputTokens));
   const uncachedTokens = Math.max(0, usage.inputTokens - cachedTokens);
@@ -99,7 +103,8 @@ export function estimateCost(
   estimatedInputTokens: number,
   maxOutputTokens?: number,
 ): number {
-  const outputTokens = Math.min(maxOutputTokens ?? model.maxOutputTokens, model.maxOutputTokens);
+  const limit = model.maxOutputTokens ?? 0;
+  const outputTokens = Math.min(maxOutputTokens ?? limit, limit);
   return calculateCost(model, {
     inputTokens: Math.max(0, estimatedInputTokens),
     outputTokens: Math.max(0, outputTokens),
@@ -162,4 +167,83 @@ export function estimateTokens(text: string): number {
       denseChars / DENSE_SCRIPT_CHARS_PER_TOKEN +
       latinChars / LATIN_CHARS_PER_TOKEN,
   );
+}
+
+/** How a stretch of audio was transcribed, in the terms it is billed by. */
+export interface SttUsage {
+  audioSeconds: number;
+  /**
+   * Streamed rather than submitted as a file.
+   *
+   * In realtime the clock that runs is the connection's, not the speech's:
+   * silence is paid for. That is not a rounding detail — it is the reason a
+   * dictation session has to be closed when nobody is talking.
+   */
+  realtime?: boolean;
+  diarization?: boolean;
+}
+
+export interface SttCostBreakdown {
+  /** Seconds actually charged, after rounding up to a whole second. */
+  billedSeconds: number;
+  baseMicros: number;
+  diarizationMicros: number;
+  totalMicros: number;
+  priceVersion: string;
+}
+
+const SECONDS_PER_HOUR = 3_600;
+
+function perAudioHour(seconds: number, pricePerHour: number): number {
+  if (seconds <= 0 || pricePerHour <= 0) return 0;
+  return (seconds * pricePerHour) / SECONDS_PER_HOUR;
+}
+
+/**
+ * Prices one transcription.
+ *
+ * Seconds are rounded up to a whole second before anything is multiplied,
+ * because that is what the providers bill; half a second lost per call is a
+ * discrepancy between our reports and theirs that nobody reconciles later.
+ * Everything after that is the same rule as tokens: integers, micro-units, one
+ * rounding at the end, upwards.
+ */
+export function calculateSttCost(model: ModelDefinition, usage: SttUsage): SttCostBreakdown {
+  const pricing = model.sttPricing;
+  if (!pricing) {
+    throw new CatalogError(`Model "${model.name}" has no per-audio-hour pricing`);
+  }
+
+  const billedSeconds = Math.max(0, Math.ceil(usage.audioSeconds));
+
+  // Falling back to the batch price when a realtime one is missing is on
+  // purpose: the alternative is billing zero for a session that really ran.
+  const basePrice =
+    usage.realtime && pricing.perAudioHourRealtimeMicros !== undefined
+      ? pricing.perAudioHourRealtimeMicros
+      : pricing.perAudioHourMicros;
+
+  const baseMicros = perAudioHour(billedSeconds, basePrice);
+  const diarizationMicros = usage.diarization
+    ? perAudioHour(billedSeconds, pricing.diarizationPerAudioHourMicros ?? 0)
+    : 0;
+
+  return {
+    billedSeconds,
+    baseMicros: Math.ceil(baseMicros),
+    diarizationMicros: Math.ceil(diarizationMicros),
+    totalMicros: Math.ceil(baseMicros + diarizationMicros),
+    priceVersion: pricing.version,
+  };
+}
+
+/**
+ * What a transcription will cost, before it runs.
+ *
+ * Unlike the token estimate this one is not a guess: the duration of a file is
+ * known from `ffprobe` before a provider is called, which makes speech the one
+ * place in AI where an exact price can be quoted up front.
+ */
+export function estimateSttCost(model: ModelDefinition, usage: SttUsage): number {
+  return calculateSttCost(model, usage).totalMicros;
 }

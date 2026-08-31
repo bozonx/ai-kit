@@ -56,6 +56,14 @@ export default [
                 AbortController: 'readonly',
                 ReadableStream: 'readonly',
                 fetch: 'readonly',
+                // Web APIs Node has had since 18, used by the speech adapters,
+                // which talk to plain HTTP and WebSocket endpoints.
+                Response: 'readonly',
+                RequestInit: 'readonly',
+                URLSearchParams: 'readonly',
+                FormData: 'readonly',
+                Blob: 'readonly',
+                WebSocket: 'readonly',
             },
         },
         plugins: {

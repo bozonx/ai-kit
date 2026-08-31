@@ -22,6 +22,16 @@ import {
 import { MemoryStateStore } from './state/memory-state-store.js';
 import { ProviderRegistry, type ProviderFactory } from './providers/registry.js';
 import type { StreamPart } from './stream/stream-parts.js';
+import { SttProviderRegistry } from './stt/registry.js';
+import {
+  runTranscribe,
+  runTranscribeStream,
+  type SttExecutionDeps,
+  type StreamTranscribeRequest,
+  type TranscribeRequest,
+  type TranscribeResult,
+} from './stt/run.js';
+import type { SttProviderFactory, TranscriptPart } from './stt/types.js';
 
 /**
  * The package, assembled.
@@ -43,6 +53,8 @@ export interface AiKitOptions {
   retry?: Partial<RetryPolicy>;
   /** Adapters for providers the package does not ship, or replacements. */
   providers?: Record<string, ProviderFactory>;
+  /** The same, for speech. A separate map because they are separate clients. */
+  sttProviders?: Record<string, SttProviderFactory>;
 }
 
 export interface AiKit {
@@ -52,6 +64,10 @@ export interface AiKit {
   generate<T = never>(request: GenerateRequest<T>): Promise<GenerateResult<T>>;
   /** The same call, part by part. */
   stream(request: StreamRequest): AsyncIterable<StreamPart>;
+  /** One recording, one transcript. */
+  transcribe(request: TranscribeRequest): Promise<TranscribeResult>;
+  /** Live dictation: drafts while somebody speaks, settled text behind them. */
+  transcribeStream(request: StreamTranscribeRequest): AsyncIterable<TranscriptPart>;
 }
 
 export function createAiKit(options: AiKitOptions): AiKit {
@@ -66,10 +82,21 @@ export function createAiKit(options: AiKitOptions): AiKit {
     retry: { ...DEFAULT_RETRY_POLICY, ...options.retry },
   };
 
+  const sttDeps: SttExecutionDeps = {
+    catalog: options.catalog,
+    registry: new SttProviderRegistry({ keys: options.keys, factories: options.sttProviders }),
+    usage: deps.usage,
+    trace: deps.trace,
+    clock: deps.clock,
+    retry: deps.retry,
+  };
+
   return {
     catalog: options.catalog,
     state,
     generate: request => runGenerate(deps, request),
     stream: request => runStream(deps, request),
+    transcribe: request => runTranscribe(sttDeps, request),
+    transcribeStream: request => runTranscribeStream(sttDeps, request),
   };
 }

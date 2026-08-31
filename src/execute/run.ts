@@ -1,21 +1,18 @@
-import {
-  generateObject,
-  generateText,
-  streamText,
-  type LanguageModel,
-  type ModelMessage,
-} from 'ai';
+import { generateObject, generateText, streamText, type ModelMessage } from 'ai';
 import type { z } from 'zod';
 
 import type { Catalog } from '../catalog/catalog.js';
 import { calculateCost, estimateTokens } from '../catalog/pricing.js';
-import type { ModelDefinition } from '../catalog/schema.js';
-import { AiError, AllCandidatesFailedError, StreamInterruptedError } from '../errors.js';
+import { AiError, StreamInterruptedError } from '../errors.js';
 import { selectCandidates, type ModelCandidate, type PolicyInput } from '../policy/policy.js';
-import type { Clock, RoutedBy, TokenUsage, TraceSink, UsageSink } from '../ports.js';
+import type { RoutedBy, TokenUsage, UsageSink } from '../ports.js';
 import type { ProviderRegistry } from '../providers/registry.js';
 import type { StreamPart } from '../stream/stream-parts.js';
+import { attemptCandidates, type AttemptDeps, type AttemptRequest } from './attempt.js';
 import { classifyError } from './classify.js';
+
+export { DEFAULT_RETRY_POLICY } from './attempt.js';
+export type { RetryPolicy } from './attempt.js';
 
 /**
  * The call itself: pick a candidate, try it, fall back, price the result.
@@ -27,46 +24,19 @@ import { classifyError } from './classify.js';
  * worse than an interrupted one.
  */
 
-/** How hard to try. Defaults are the ones a chat wants; batch work may differ. */
-export interface RetryPolicy {
-  /** Extra attempts on the same model after the first one fails. */
-  maxRetriesPerCandidate: number;
-  initialDelayMs: number;
-  maxDelayMs: number;
-  /** Ceiling for the whole call, retries and fallbacks included. */
-  totalTimeoutMs: number;
-}
-
-export const DEFAULT_RETRY_POLICY: RetryPolicy = {
-  maxRetriesPerCandidate: 2,
-  initialDelayMs: 500,
-  maxDelayMs: 4_000,
-  totalTimeoutMs: 120_000,
-};
-
-export interface ExecutionDeps {
+export interface ExecutionDeps extends AttemptDeps {
   catalog: Catalog;
   registry: ProviderRegistry;
   usage: UsageSink;
-  trace: TraceSink;
-  clock: Clock;
-  retry: RetryPolicy;
 }
 
-interface CommonRequest {
+interface CommonRequest extends AttemptRequest {
   policy: PolicyInput;
   /** Instructions. Untrusted material belongs in `messages`, wrapped. */
   system?: string;
   messages: ModelMessage[];
   temperature?: number;
   maxOutputTokens?: number;
-  abortSignal?: AbortSignal;
-  /** Overrides `RetryPolicy.totalTimeoutMs` for this call. */
-  totalTimeoutMs?: number;
-  /** Correlates the call with the consumer's logs and product analytics. */
-  traceId?: string;
-  /** What to call this call in a trace. Usually the product feature. */
-  name?: string;
 }
 
 export interface GenerateRequest<T = never> extends CommonRequest {
@@ -136,42 +106,6 @@ function normalizeUsage(raw: unknown): TokenUsage {
   };
 }
 
-function sleep(ms: number, signal?: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (signal?.aborted) {
-      reject(new AiError('aborted', 'The call was aborted'));
-      return;
-    }
-    const timer = setTimeout(() => {
-      signal?.removeEventListener('abort', onAbort);
-      resolve();
-    }, ms);
-    const onAbort = (): void => {
-      clearTimeout(timer);
-      reject(new AiError('aborted', 'The call was aborted'));
-    };
-    signal?.addEventListener('abort', onAbort, { once: true });
-  });
-}
-
-/** Exponential backoff with jitter, so retries from many callers do not line up. */
-function backoffMs(attempt: number, retry: RetryPolicy): number {
-  const base = Math.min(retry.initialDelayMs * 2 ** attempt, retry.maxDelayMs);
-  return Math.round(base / 2 + Math.random() * (base / 2));
-}
-
-/**
- * A signal that fires on the caller's abort or when the call's time is up.
- *
- * The remaining budget shrinks with every attempt, which is the point: the
- * deadline is a property of the request, not of the try.
- */
-function attemptSignal(deadline: number, clock: Clock, caller?: AbortSignal): AbortSignal {
-  const remaining = Math.max(1, deadline - clock.now());
-  const timeout = AbortSignal.timeout(remaining);
-  return caller ? AbortSignal.any([caller, timeout]) : timeout;
-}
-
 function accounting(
   candidate: ModelCandidate,
   usage: TokenUsage,
@@ -189,100 +123,6 @@ function accounting(
     attempts,
     latencyMs,
   };
-}
-
-interface AttemptOutcome<R> {
-  value: R;
-  candidate: ModelCandidate;
-  attempts: number;
-}
-
-/**
- * Walks the candidate list, retrying each one under the rules of 7.4.
- *
- * `onFirstOutput` is how a stream opts out of retrying: once it has emitted
- * anything the caller can see, it reports so, and a later failure is raised
- * rather than re-attempted.
- */
-async function attemptCandidates<R>(
-  deps: ExecutionDeps,
-  candidates: ModelCandidate[],
-  request: CommonRequest,
-  run: (params: {
-    model: LanguageModel;
-    definition: ModelDefinition;
-    signal: AbortSignal;
-  }) => Promise<R>,
-): Promise<AttemptOutcome<R>> {
-  const retry = {
-    ...deps.retry,
-    totalTimeoutMs: request.totalTimeoutMs ?? deps.retry.totalTimeoutMs,
-  };
-  const deadline = deps.clock.now() + retry.totalTimeoutMs;
-  const failures: Array<{ provider: string; model: string; error: AiError }> = [];
-  let attempts = 0;
-
-  for (const candidate of candidates) {
-    for (let tryIndex = 0; tryIndex <= retry.maxRetriesPerCandidate; tryIndex += 1) {
-      if (request.abortSignal?.aborted) {
-        throw new AiError('aborted', 'The call was aborted');
-      }
-      if (deps.clock.now() >= deadline) {
-        throw new AiError('timeout', 'The call ran out of its time budget');
-      }
-
-      attempts += 1;
-      try {
-        const model = await deps.registry.languageModel(candidate.model);
-        const value = await run({
-          model,
-          definition: candidate.model,
-          signal: attemptSignal(deadline, deps.clock, request.abortSignal),
-        });
-        return { value, candidate, attempts };
-      } catch (error) {
-        const classified = classifyError(error, {
-          provider: candidate.model.provider,
-          model: candidate.model.name,
-          callerAborted: request.abortSignal?.aborted,
-        });
-
-        if (classified.kind === 'aborted' || classified.kind === 'stream_interrupted') {
-          throw classified;
-        }
-
-        failures.push({
-          provider: candidate.model.provider,
-          model: candidate.model.name,
-          error: classified,
-        });
-
-        deps.trace.span({
-          traceId: request.traceId,
-          name: `${request.name ?? 'generate'}.attempt-failed`,
-          startedAt: deps.clock.now(),
-          endedAt: deps.clock.now(),
-          metadata: {
-            provider: candidate.model.provider,
-            model: candidate.model.name,
-            kind: classified.kind,
-          },
-        });
-
-        const canRetrySameModel = classified.retryable && tryIndex < retry.maxRetriesPerCandidate;
-        if (!canRetrySameModel) break;
-
-        const wait = backoffMs(tryIndex, retry);
-        if (deps.clock.now() + wait >= deadline) break;
-        await sleep(wait, request.abortSignal);
-      }
-    }
-  }
-
-  // A single non-retryable failure explains itself better than a list of one.
-  const only = failures.length === 1 ? failures[0] : undefined;
-  if (only) throw only.error;
-  throw new AllCandidatesFailedError(failures);
 }
 
 async function recordUsage(
@@ -314,6 +154,7 @@ async function recordUsage(
     latencyMs: data.latencyMs,
     attempts: data.attempts,
     traceId: request.traceId,
+    audioSeconds: 0,
   });
 }
 
@@ -337,42 +178,45 @@ export async function runGenerate<T = never>(
 
   const startedAt = deps.clock.now();
 
-  const outcome = await attemptCandidates(deps, candidates, request, async ({ model, signal }) => {
-    const common = {
-      model,
-      system: request.system,
-      messages: request.messages,
-      temperature: request.temperature,
-      maxOutputTokens: request.maxOutputTokens,
-      abortSignal: signal,
-      // The SDK retries too, and two retry loops multiply: the time budget
-      // stops meaning anything and `attempts` stops matching reality. The
-      // rules of 7.4 live here, so the one underneath is turned off.
-      maxRetries: 0,
-    };
-
-    if (request.schema) {
-      const result = await generateObject({
-        ...common,
-        schema: request.schema,
-        schemaName: request.schemaName,
-        schemaDescription: request.schemaDescription,
-      });
-      return {
-        text: JSON.stringify(result.object),
-        object: result.object as T,
-        finishReason: String(result.finishReason),
-        usage: normalizeUsage(result.usage),
+  const outcome = await attemptCandidates(deps, candidates, request, {
+    prepare: definition => deps.registry.languageModel(definition),
+    run: async ({ client: model, signal }) => {
+      const common = {
+        model,
+        system: request.system,
+        messages: request.messages,
+        temperature: request.temperature,
+        maxOutputTokens: request.maxOutputTokens,
+        abortSignal: signal,
+        // The SDK retries too, and two retry loops multiply: the time budget
+        // stops meaning anything and `attempts` stops matching reality. The
+        // rules of 7.4 live here, so the one underneath is turned off.
+        maxRetries: 0,
       };
-    }
 
-    const result = await generateText(common);
-    return {
-      text: result.text,
-      object: undefined,
-      finishReason: String(result.finishReason),
-      usage: normalizeUsage(result.totalUsage),
-    };
+      if (request.schema) {
+        const result = await generateObject({
+          ...common,
+          schema: request.schema,
+          schemaName: request.schemaName,
+          schemaDescription: request.schemaDescription,
+        });
+        return {
+          text: JSON.stringify(result.object),
+          object: result.object as T,
+          finishReason: String(result.finishReason),
+          usage: normalizeUsage(result.usage),
+        };
+      }
+
+      const result = await generateText(common);
+      return {
+        text: result.text,
+        object: undefined,
+        finishReason: String(result.finishReason),
+        usage: normalizeUsage(result.totalUsage),
+      };
+    },
   });
 
   const data = accounting(
@@ -423,11 +267,9 @@ export async function* runStream(
   // Retry and fallback happen inside here, and only up to the first part the
   // reader would see. Past that the answer is committed to whichever model
   // produced it.
-  const outcome = await attemptCandidates(
-    deps,
-    candidates,
-    request,
-    async ({ model, definition, signal }) => {
+  const outcome = await attemptCandidates(deps, candidates, request, {
+    prepare: definition => deps.registry.languageModel(definition),
+    run: async ({ client: model, definition, signal }) => {
       const result = streamText({
         model,
         system: request.system,
@@ -465,7 +307,7 @@ export async function* runStream(
 
       return { iterator, prelude };
     },
-  );
+  });
 
   const candidate = outcome.candidate;
   yield {

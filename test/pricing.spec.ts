@@ -5,6 +5,8 @@ import type { ModelDefinition } from '../src/catalog/schema.js';
 
 const model = (overrides: Partial<ModelDefinition['pricing']> = {}): ModelDefinition => ({
   name: 'test-model',
+  kind: 'llm',
+  languages: [],
   provider: 'test',
   model: 'test/model',
   tier: 'standard',
