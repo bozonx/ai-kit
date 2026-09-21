@@ -27,12 +27,6 @@ export type ProviderFactory = (params: {
   baseUrl?: string;
 }) => LanguageModel | Promise<LanguageModel>;
 
-/**
- * Turns a missing optional peer into a sentence that says what to install.
- *
- * The alternative is a module-resolution stack trace, which is the same
- * information written for somebody who already knows the answer.
- */
 /** The same, for embedding models. */
 export type EmbeddingProviderFactory = (params: {
   apiKey: string;
@@ -40,6 +34,12 @@ export type EmbeddingProviderFactory = (params: {
   baseUrl?: string;
 }) => EmbeddingModel | Promise<EmbeddingModel>;
 
+/**
+ * Turns a missing optional peer into a sentence that says what to install.
+ *
+ * The alternative is a module-resolution stack trace, which is the same
+ * information written for somebody who already knows the answer.
+ */
 async function load<T>(specifier: string, importer: () => Promise<T>): Promise<T> {
   try {
     return await importer();

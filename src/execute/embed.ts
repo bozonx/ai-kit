@@ -2,12 +2,17 @@ import { embedMany } from 'ai';
 
 import type { Catalog } from '../catalog/catalog.js';
 import { calculateCost, estimateTokens } from '../catalog/pricing.js';
-import type { TaskClass } from '../catalog/schema.js';
 import { AiError } from '../errors.js';
-import { selectCandidates, type ModelCandidate } from '../policy/policy.js';
+import {
+  candidatePolicyOf,
+  selectCandidates,
+  type CandidatePolicy,
+  type ModelCandidate,
+} from '../policy/policy.js';
 import type { CallStatus, RoutedBy, UsageSink } from '../ports.js';
 import type { ProviderRegistry } from '../providers/registry.js';
 import { attemptCandidates, type AttemptDeps, type AttemptRequest } from './attempt.js';
+import { recordCall } from './record.js';
 import type { ProviderOptions } from './run.js';
 
 /**
@@ -27,19 +32,13 @@ export interface EmbedExecutionDeps extends AttemptDeps {
   usage: UsageSink;
 }
 
-export interface EmbedPolicyInput {
-  /** `manual` honours `requestedModel`; `auto` follows the catalog's order. */
-  mode: 'auto' | 'manual';
-  taskClass: TaskClass;
-  /**
-   * Pin this when the vectors go into an existing index: only the same model
-   * at another provider is then an acceptable fallback.
-   */
-  requestedModel?: string | string[];
+/**
+ * Which model. Pin `requestedModel` when the vectors go into an existing index:
+ * only the same model at another provider is then an acceptable fallback.
+ */
+export interface EmbedPolicyInput extends CandidatePolicy {
   /** BCP-47 tag of the text, when known. */
   language?: string;
-  /** Routes the caller does not want tried first, by their own route id. */
-  demotedRoutes?: ReadonlySet<string>;
 }
 
 export interface EmbedRequest extends AttemptRequest {
@@ -86,14 +85,7 @@ export async function runEmbed(
   const perValue = request.values.map(value => estimateTokens(value));
   const candidates = selectCandidates(
     {
-      mode: request.policy.mode,
-      taskClass: request.policy.taskClass,
-      ...(request.policy.requestedModel === undefined
-        ? {}
-        : { requestedModel: request.policy.requestedModel }),
-      ...(request.policy.demotedRoutes === undefined
-        ? {}
-        : { demotedRoutes: request.policy.demotedRoutes }),
+      ...candidatePolicyOf(request.policy),
       signals: {
         estimatedInputTokens: Math.max(...perValue),
         ...(request.policy.language === undefined ? {} : { language: request.policy.language }),
@@ -161,7 +153,7 @@ function priceIt(
   };
 }
 
-async function record(
+function record(
   deps: EmbedExecutionDeps,
   request: EmbedRequest,
   data: EmbedAccounting,
@@ -173,32 +165,23 @@ async function record(
     cachedInputTokens: 0,
     reasoningTokens: 0,
   };
-  deps.trace.generation({
-    traceId: request.traceId,
+  return recordCall(deps, {
     name: request.name ?? 'embed',
-    provider: data.provider,
-    model: data.model,
-    startedAt: deps.clock.now() - data.latencyMs,
-    endedAt: deps.clock.now(),
-    usage,
-    costMicros: data.costMicros,
-    status,
-    metadata: { values: request.values.length },
-  });
-
-  await deps.usage.record({
-    provider: data.provider,
-    model: data.model,
-    ...(data.routeId === undefined ? {} : { routeId: data.routeId }),
-    routedBy: data.routedBy,
-    usage,
-    audioSeconds: 0,
-    characters: 0,
-    costMicros: data.costMicros,
-    priceVersion: data.priceVersion,
-    status,
-    latencyMs: data.latencyMs,
-    attempts: data.attempts,
-    traceId: request.traceId,
+    event: {
+      provider: data.provider,
+      model: data.model,
+      ...(data.routeId === undefined ? {} : { routeId: data.routeId }),
+      routedBy: data.routedBy,
+      usage,
+      audioSeconds: 0,
+      characters: 0,
+      costMicros: data.costMicros,
+      priceVersion: data.priceVersion,
+      status,
+      latencyMs: data.latencyMs,
+      attempts: data.attempts,
+      ...(request.traceId === undefined ? {} : { traceId: request.traceId }),
+    },
+    trace: { usage, metadata: { values: request.values.length } },
   });
 }

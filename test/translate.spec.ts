@@ -115,6 +115,33 @@ describe('pricing a translation', () => {
   });
 });
 
+describe('planning a translation', () => {
+  it('quotes every engine exactly and runs the one it planned', async () => {
+    const events: UsageEvent[] = [];
+    const kit = kitWith(
+      fakeEngine(() => Promise.resolve({ translations: ['привет'] })),
+      events,
+    );
+    const request = {
+      policy: { taskClass: 'translate_fast', demotedRoutes: new Set<string>() },
+      texts: ['hello'],
+      targetLanguage: 'ru',
+    };
+
+    const plan = kit.planTranslation(request);
+    expect(plan.quotes.map(quote => [quote.candidate.model.name, quote.costMicros])).toEqual([
+      ['engine-plain', 50],
+      ['engine', 100],
+    ]);
+
+    const result = await kit.translate({
+      ...request,
+      plan: { ...plan, candidates: plan.candidates.slice(1) },
+    });
+    expect(result.model).toBe('engine');
+  });
+});
+
 describe('running a translation', () => {
   it('records the characters and the cost of what was sent', async () => {
     const events: UsageEvent[] = [];

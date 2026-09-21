@@ -29,11 +29,14 @@ import {
   type ProviderFactory,
 } from './providers/registry.js';
 import type { StreamPart } from './stream/stream-parts.js';
+import type { CandidatePlan } from './policy/quote.js';
 import { SttProviderRegistry } from './stt/registry.js';
 import {
+  planTranscribe,
   runTranscribe,
   runTranscribeStream,
   type SttExecutionDeps,
+  type SttPlanUsage,
   type StreamTranscribeRequest,
   type TranscribeRequest,
   type TranscribeResult,
@@ -41,6 +44,7 @@ import {
 import type { SttProviderFactory, TranscriptPart } from './stt/types.js';
 import { MtProviderRegistry } from './translate/registry.js';
 import {
+  planTranslate,
   runTranslate,
   type MtExecutionDeps,
   type TranslateRequest,
@@ -94,10 +98,27 @@ export interface AiKit {
   generate<T = never>(request: GenerateRequest<T>): Promise<GenerateResult<T>>;
   /** The same call, part by part. */
   stream(request: StreamRequest): AsyncIterable<StreamPart>;
+  /**
+   * The speech models a transcription would try and what each could cost,
+   * without calling any. Pass the result back as `plan` on the same request.
+   *
+   * @throws NoSuitableModelError when nothing in the catalog fits.
+   */
+  planTranscription(
+    request: TranscribeRequest | StreamTranscribeRequest,
+    usage: SttPlanUsage,
+  ): CandidatePlan;
   /** One recording, one transcript. */
   transcribe(request: TranscribeRequest): Promise<TranscribeResult>;
   /** Live dictation: drafts while somebody speaks, settled text behind them. */
   transcribeStream(request: StreamTranscribeRequest): AsyncIterable<TranscriptPart>;
+  /**
+   * The engines a translation would try and what each would charge, without
+   * calling any. Pass the result back as `plan` on the same request.
+   *
+   * @throws NoSuitableModelError when nothing in the catalog fits.
+   */
+  planTranslation(request: TranslateRequest): CandidatePlan;
   /** One batch of strings through a dedicated translation engine. */
   translate(request: TranslateRequest): Promise<TranslateResult>;
   /** One batch of strings, one vector each. */
@@ -151,8 +172,10 @@ export function createAiKit(options: AiKitOptions): AiKit {
       planCall(options.catalog, request as GenerateRequest<unknown>, planOptions),
     generate: request => runGenerate(deps, request),
     stream: request => runStream(deps, request),
+    planTranscription: (request, usage) => planTranscribe(options.catalog, request, usage),
     transcribe: request => runTranscribe(sttDeps, request),
     transcribeStream: request => runTranscribeStream(sttDeps, request),
+    planTranslation: request => planTranslate(options.catalog, request),
     translate: request => runTranslate(mtDeps, request),
     embed: request => runEmbed(deps, request),
   };

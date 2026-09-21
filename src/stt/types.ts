@@ -157,11 +157,23 @@ export interface TranscriptFinalPart {
 }
 
 /** Final accounting. Arrives once, whether the session ended well or not. */
-export interface TranscriptUsagePart {
-  type: 'usage';
+/** What a finished transcription cost and who produced it. */
+export interface SttAccounting {
+  provider: string;
+  model: string;
+  /** The consumer's own id for the route that answered, when it gave one. */
+  routeId?: string;
+  routedBy: RoutedBy;
   audioSeconds: number;
   costMicros: number;
   priceVersion: string;
+  attempts: number;
+  latencyMs: number;
+}
+
+/** The session's full accounting, the same fields `transcribe` returns. */
+export interface TranscriptUsagePart extends SttAccounting {
+  type: 'usage';
 }
 
 export interface TranscriptErrorPart {

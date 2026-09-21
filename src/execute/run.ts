@@ -14,20 +14,23 @@ import { calculateCost, estimateTokens } from '../catalog/pricing.js';
 import { AiError, StreamInterruptedError, callStatusFor } from '../errors.js';
 import {
   selectCandidates,
+  type CandidatePolicy,
   type ModelCandidate,
   type PolicyInput,
   type PolicySignals,
 } from '../policy/policy.js';
-import { quoteCandidate, type CandidateQuote } from '../policy/quote.js';
+import { quoteCandidate, type CandidatePlan } from '../policy/quote.js';
 import { signalsFor } from '../policy/signals.js';
-import type { CallStatus, RoutedBy, TokenUsage, UsageSink } from '../ports.js';
+import type { CallAccounting, CallStatus, TokenUsage, UsageSink } from '../ports.js';
 import type { ProviderRegistry } from '../providers/registry.js';
 import type { StreamPart } from '../stream/stream-parts.js';
 import { attemptCandidates, type AttemptDeps, type AttemptRequest } from './attempt.js';
 import { classifyError } from './classify.js';
+import { recordCall } from './record.js';
 
 export { DEFAULT_RETRY_POLICY } from './attempt.js';
 export type { RetryPolicy } from './attempt.js';
+export type { CallAccounting } from '../ports.js';
 
 /**
  * The call itself: pick a candidate, try it, fall back, price the result.
@@ -54,8 +57,21 @@ export interface ExecutionDeps extends AttemptDeps {
  */
 export type ProviderOptions = NonNullable<Parameters<typeof generateText>[0]['providerOptions']>;
 
+/**
+ * The policy of one language-model call.
+ *
+ * Signals are optional here, and so is each of them: what the shape of the
+ * request tells — its size, whether it carries images — is read off `system`
+ * and `messages` when the caller does not say, and what the request asks for —
+ * a schema, tools, streaming, an output allowance — is added on top.
+ */
+export interface RequestPolicy extends CandidatePolicy {
+  signals?: Partial<PolicySignals>;
+  budget?: PolicyInput['budget'];
+}
+
 interface CommonRequest extends AttemptRequest {
-  policy: PolicyInput;
+  policy: RequestPolicy;
   /** Instructions. Untrusted material belongs in `messages`, wrapped. */
   system?: string;
   messages: ModelMessage[];
@@ -81,20 +97,10 @@ interface CommonRequest extends AttemptRequest {
   plan?: CallPlan;
 }
 
-/**
- * The call, decided but not made: which candidates, in what order, at what
- * worst-case cost.
- *
- * A consumer that reserves budget needs the quotes before the call and the call
- * needs the candidates; working both out from one selection is what keeps the
- * hold and the attempt about the same models.
- */
-export interface CallPlan {
+/** A language-model call decided but not made, with what it was decided on. */
+export interface CallPlan extends CandidatePlan {
   /** The signals the candidates were chosen on, the request's own included. */
   signals: PolicySignals;
-  candidates: ModelCandidate[];
-  /** Every candidate with its worst-case cost, in the same order. */
-  quotes: CandidateQuote[];
   /**
    * The requested output allowance capped at the first candidate's limit, or
    * that limit when none was requested.
@@ -107,20 +113,6 @@ export interface GenerateRequest<T = never> extends CommonRequest {
   schema?: z.ZodType<T>;
   schemaName?: string;
   schemaDescription?: string;
-}
-
-export interface CallAccounting {
-  provider: string;
-  model: string;
-  /** The consumer's own id for the route that answered, when it gave one. */
-  routeId?: string;
-  routedBy: RoutedBy;
-  usage: TokenUsage;
-  costMicros: number;
-  priceVersion: string;
-  /** Provider requests made, retries and fallbacks included. */
-  attempts: number;
-  latencyMs: number;
 }
 
 /** One tool the model called during the call, with what it got back. */
@@ -262,46 +254,45 @@ function accounting(
   };
 }
 
-async function recordUsage(
+function recordUsage(
   deps: ExecutionDeps,
   request: CommonRequest,
   data: CallAccounting,
   status: CallStatus,
 ): Promise<void> {
-  deps.trace.generation({
-    traceId: request.traceId,
+  return recordCall(deps, {
     name: request.name ?? 'generate',
-    provider: data.provider,
-    model: data.model,
-    startedAt: deps.clock.now() - data.latencyMs,
-    endedAt: deps.clock.now(),
-    usage: data.usage,
-    costMicros: data.costMicros,
-    status,
-  });
-
-  await deps.usage.record({
-    provider: data.provider,
-    model: data.model,
-    ...(data.routeId === undefined ? {} : { routeId: data.routeId }),
-    routedBy: data.routedBy,
-    usage: data.usage,
-    costMicros: data.costMicros,
-    priceVersion: data.priceVersion,
-    status,
-    latencyMs: data.latencyMs,
-    attempts: data.attempts,
-    traceId: request.traceId,
-    audioSeconds: 0,
-    characters: 0,
+    event: {
+      provider: data.provider,
+      model: data.model,
+      ...(data.routeId === undefined ? {} : { routeId: data.routeId }),
+      routedBy: data.routedBy,
+      usage: data.usage,
+      costMicros: data.costMicros,
+      priceVersion: data.priceVersion,
+      status,
+      latencyMs: data.latencyMs,
+      attempts: data.attempts,
+      ...(request.traceId === undefined ? {} : { traceId: request.traceId }),
+      audioSeconds: 0,
+      characters: 0,
+    },
+    trace: { usage: data.usage },
   });
 }
 
-/** The signals a request carries by what it asks for, over what the caller said. */
+/**
+ * The signals a request carries: what the caller said, over what its shape
+ * shows, with what it asks for added on top.
+ */
 function effectiveSignals(request: GenerateRequest<unknown>, stream: boolean): PolicySignals {
-  const signals = request.policy.signals;
+  const signals = request.policy.signals ?? {};
+  const shape = signalsFor(request);
+  const hasImages = signals.hasImages ?? shape.hasImages;
   return {
     ...signals,
+    estimatedInputTokens: signals.estimatedInputTokens ?? shape.estimatedInputTokens,
+    ...(hasImages === undefined ? {} : { hasImages }),
     ...(stream
       ? { needsStreaming: true }
       : { needsStructuredOutput: signals.needsStructuredOutput ?? Boolean(request.schema) }),
@@ -375,7 +366,7 @@ export async function runGenerate<T = never>(
         abortSignal: signal,
         // The SDK retries too, and two retry loops multiply: the time budget
         // stops meaning anything and `attempts` stops matching reality. The
-        // rules of 7.4 live here, so the one underneath is turned off.
+        // retry loop is `attemptCandidates`, so the one underneath is off.
         maxRetries: 0,
         ...sdkExtras(request),
       };
@@ -446,8 +437,12 @@ export async function* runStream(
     request.plan?.candidates ?? planCall(deps.catalog, request, { stream: true }).candidates;
 
   const startedAt = deps.clock.now();
+  // Whether anything visible has reached the reader, and everything it was:
+  // the answer, the reasoning, the tool calls. `text` alone is the answer,
+  // which is what an interrupted stream hands back.
   let emitted = false;
   let text = '';
+  let produced = '';
 
   // Aborted when the consumer walks away from the generator. The caller's own
   // signal says "stop", this one says "nobody is reading any more" — and both
@@ -532,7 +527,7 @@ export async function* runStream(
       usage = {
         ...usage,
         inputTokens: usage.inputTokens || signalsFor(request).estimatedInputTokens,
-        outputTokens: estimateTokens(text),
+        outputTokens: estimateTokens(produced),
       };
     }
     settled = accounting(candidate, usage, outcome.attempts, deps.clock.now() - startedAt);
@@ -563,12 +558,17 @@ export async function* runStream(
           case 'text-delta':
             emitted = true;
             text += part.text;
+            produced += part.text;
             yield { type: 'text-delta', text: part.text };
             break;
           case 'reasoning-delta':
+            emitted = true;
+            produced += part.text;
             yield { type: 'reasoning-delta', text: part.text };
             break;
           case 'tool-call':
+            emitted = true;
+            produced += JSON.stringify(part.input ?? null);
             yield {
               type: 'tool-call',
               toolCallId: part.toolCallId,
@@ -577,6 +577,7 @@ export async function* runStream(
             };
             break;
           case 'tool-result':
+            emitted = true;
             yield {
               type: 'tool-result',
               toolCallId: part.toolCallId,
@@ -585,6 +586,7 @@ export async function* runStream(
             };
             break;
           case 'tool-error':
+            emitted = true;
             yield {
               type: 'tool-result',
               toolCallId: part.toolCallId,
@@ -594,6 +596,7 @@ export async function* runStream(
             };
             break;
           case 'source':
+            emitted = true;
             yield {
               type: 'sources',
               sources: [
@@ -652,12 +655,7 @@ export async function* runStream(
 
     const data = await settle();
 
-    yield {
-      type: 'usage',
-      usage: data.usage,
-      costMicros: data.costMicros,
-      priceVersion: data.priceVersion,
-    };
+    yield { type: 'usage', ...data };
 
     if (failure) {
       yield {

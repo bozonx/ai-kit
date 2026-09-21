@@ -33,9 +33,9 @@ visible without publishing.
 | Import | What is in it |
 |---|---|
 | `@bozonx/ai-kit` | `createAiKit` and everything needed to call it: the catalog, pricing, policy, errors, ports, prompt assembly, tools, chat history compaction, request and result types |
-| `@bozonx/ai-kit/stt` | Speech extras: provider adapters, subtitles, word segmentation, audio helpers (`estimateAudioSeconds`, `SilenceDetector`, `pcm16ToWav`) |
+| `@bozonx/ai-kit/stt` | Speech extras: provider adapters, subtitles, word segmentation, audio helpers (`estimateAudioSeconds`, `SilenceDetector`, `PhraseChunker`, `pcm16ToWav`) |
 | `@bozonx/ai-kit/translate` | Translation extras: the Cloud Translation adapter, parallel text splitting, the binding glossary, the quality detectors |
-| `@bozonx/ai-kit/stream` | The stream-part types alone, for a browser |
+| `@bozonx/ai-kit/stream` | The stream-part types and the SSE codec (`encodeSse`, `SseDecoder`), safe to import in a browser |
 
 The kit is the way to call a model. The loops underneath it — retry, fallback,
 pricing — are not exported on their own: a consumer that needs something the
@@ -146,6 +146,13 @@ a stream — carries the full accounting, so a consumer that has to attach a
 tenant to each row can record from the result and leave the sink empty.
 `isProviderFault(kind)` says which failures a route's health should count.
 
+Sinks are called best effort. A `UsageSink` that throws does not fail the call
+it was recording — the provider has answered and been paid by then — and is
+reported as a `<name>.usage-failed` span on the `TraceSink` instead. A call
+that ends without an answer (every candidate failed, the time budget ran out,
+the caller aborted) is still recorded, at zero cost, with its status and the
+number of attempts it took.
+
 `AttemptObserver` hears about every candidate that failed, by `routeId`,
 including the ones a fallback then covered for. The result of a call only
 names the route that answered, so this is what a consumer's route health
@@ -168,6 +175,25 @@ await kit.transcribe({
 Clients are cached per provider, endpoint, model and a hash of the whole key,
 with a bounded least-recently-used cache, so per-call keys neither leak memory
 nor share a client between two customers.
+
+## Choosing a model
+
+Every call takes a `policy`. Only `taskClass` is required:
+
+```ts
+{ taskClass: 'chat' }                               // the catalog's order
+{ taskClass: 'chat', requestedModel: 'gpt-5-mini' } // pinned; mode is implied
+{ taskClass: 'chat', demotedRoutes: unhealthyIds }  // failing routes go last
+```
+
+`mode` may still be given explicitly; left out, a policy is `manual` exactly
+when `requestedModel` names something. `demotedRoutes` applies to a pinned
+model too — its failing route is tried after its healthy ones.
+
+For a language-model call the `signals` are optional as well: the size of the
+request and whether it carries images are read off `system` and `messages`
+(the same `signalsFor` a consumer can call itself), and what the request asks
+for — a schema, tools, streaming, an output allowance — is added on top.
 
 ## Quoting before a call
 
@@ -197,6 +223,12 @@ Each attempt is sent at most the output its own model can produce, so a
 fallback to a model with a smaller limit is not refused for a number chosen for
 another one.
 
+Speech and translation plan the same way. `kit.planTranslation(request)`
+quotes every engine exactly, from the characters in hand;
+`kit.planTranscription(request, { audioSeconds, realtime })` quotes every speech
+model for the audio expected. Both return `{ candidates, quotes }`, and both
+requests accept it back as `plan`.
+
 ## Streaming
 
 `StreamPart` is one vocabulary for both ends of the connection —
@@ -208,8 +240,27 @@ drift the first time a field is added.
 `usage` arrives once, after the answer and before `finish` or `error`. A
 consumer may stop reading at any point: the provider request is then cancelled
 and the call is still recorded through the `UsageSink`, as `aborted`, with
-whatever it produced. `callStatusFor(kind)` maps an `error` part's kind to the
-status to record it under.
+whatever it produced — the answer, reasoning and tool calls alike.
+`callStatusFor(kind)` maps an `error` part's kind to the status to record it
+under.
+
+The `usage` part is the full `CallAccounting` that `generate` returns: model,
+route, `routedBy`, tokens, cost, price version, attempts and latency.
+
+Over HTTP the parts travel as server-sent events, and both halves of that are
+in `@bozonx/ai-kit/stream`, with no Node or AI SDK imports:
+
+```ts
+// Server: write each part wherever the framework lets you write.
+response.write(encodeSse(part));
+response.write(encodeSse({ id }, 'saved')); // a named event
+
+// Browser: feed decoded text, get complete events back.
+const decoder = new SseDecoder();
+for (const { event, data } of decoder.push(textDecoder.decode(chunk, { stream: true }))) {
+  // event === 'message' for a part
+}
+```
 
 ## Tools and provider options
 
@@ -303,6 +354,20 @@ Three things about it are worth knowing before the first invoice:
 
 A speech model can never be routed a language task, or the other way round: the
 catalog refuses to load when a task class nominates models of two kinds.
+
+Without a realtime provider, dictation is a series of short batch calls.
+`PhraseChunker` (from `@bozonx/ai-kit/stt`) cuts live PCM into phrases on a
+pause, or at a ceiling when nobody pauses, and tells each phrase where it
+starts in the session so its segments land on one timeline:
+
+```ts
+const chunker = new PhraseChunker({ maxSeconds: 30, silenceMs: 1_200 });
+for await (const chunk of microphone) {
+  const phrase = chunker.push(chunk.data);
+  if (phrase) await send(pcm16ToWav(phrase.pcm, 16_000), phrase.offsetMs);
+}
+const last = chunker.flush();
+```
 
 `renderSubtitles` (from `@bozonx/ai-kit/stt`) turns stored segments into SRT or WebVTT, cutting long cues on
 a real pause when word timings are there and proportionally when they are not.

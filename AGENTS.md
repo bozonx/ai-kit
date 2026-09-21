@@ -7,7 +7,7 @@
 
 - Node.js: version 22, package manager `pnpm`
 - Library source: `src/`. Public entry points: `src/index.ts` (the kit), `src/stt/index.ts`,
-  `src/translate/index.ts`, `src/stream/stream-parts.ts` — mirrored in `exports` of `package.json`
+  `src/translate/index.ts`, `src/stream/index.ts` — mirrored in `exports` of `package.json`
 - Tests: `test/`, run with `pnpm test`
 - `README.md` at the root (it ships with the package), other guides in `docs/`,
   work-in-progress plans in `dev_docs/`

@@ -60,15 +60,54 @@ function primarySubtag(tag: string): string {
   return tag.trim().toLowerCase().split(/[-_]/)[0] ?? '';
 }
 
-export interface PolicyInput {
-  /** `manual` honours `requestedModel`; `auto` follows the catalog's order. */
-  mode: 'auto' | 'manual';
+/**
+ * Which models a call may use, in the terms every kind of call shares.
+ *
+ * Text, speech, translation and embeddings differ in their signals, not in
+ * how a model is pinned or a route demoted, so this part is written once.
+ */
+export interface CandidatePolicy {
+  /**
+   * `manual` honours `requestedModel`; `auto` follows the catalog's order.
+   * Omitted, it is `manual` exactly when `requestedModel` names something.
+   */
+  mode?: 'auto' | 'manual';
   taskClass: TaskClass;
   /**
    * What the caller pinned: a name, a `provider/name`, a priority list, or
    * `auto`. Only consulted in manual mode.
    */
   requestedModel?: string | string[];
+  /**
+   * Routes the caller does not want tried first, by their own route id.
+   *
+   * The consumer's health automation knows things the catalog does not — that
+   * a provider has been failing for ten minutes. A route named here is moved
+   * to the back rather than dropped: a degraded route is still better than no
+   * answer when it is the only one left. It applies to a pinned model as much
+   * as to the catalog's own order.
+   */
+  demotedRoutes?: ReadonlySet<string>;
+}
+
+/** Whether a policy pins its models, spelled out or implied. */
+export function isManual(policy: Pick<CandidatePolicy, 'mode' | 'requestedModel'>): boolean {
+  if (policy.mode) return policy.mode === 'manual';
+  const requested = policy.requestedModel;
+  return Array.isArray(requested) ? requested.length > 0 : Boolean(requested);
+}
+
+/** Only the fields of a candidate policy, whatever else the object carries. */
+export function candidatePolicyOf(policy: CandidatePolicy): CandidatePolicy {
+  return {
+    ...(policy.mode === undefined ? {} : { mode: policy.mode }),
+    taskClass: policy.taskClass,
+    ...(policy.requestedModel === undefined ? {} : { requestedModel: policy.requestedModel }),
+    ...(policy.demotedRoutes === undefined ? {} : { demotedRoutes: policy.demotedRoutes }),
+  };
+}
+
+export interface PolicyInput extends CandidatePolicy {
   signals: PolicySignals;
   /**
    * Spend the caller is willing to allow for this call, in micro-units.
@@ -76,15 +115,6 @@ export interface PolicyInput {
    * caller checks budget elsewhere, which is the normal case.
    */
   budget?: { remainingMicros: number };
-  /**
-   * Routes the caller does not want tried first, by their own route id.
-   *
-   * The consumer's health automation knows things the catalog does not — that
-   * a provider has been failing for ten minutes. A route named here is moved
-   * to the back rather than dropped: a degraded route is still better than no
-   * answer when it is the only one left.
-   */
-  demotedRoutes?: ReadonlySet<string>;
 }
 
 /**
@@ -211,7 +241,7 @@ function routesFor(
 export function selectCandidates(input: PolicyInput, catalog: Catalog): ModelCandidate[] {
   const nominated = catalog.candidatesFor(input.taskClass);
 
-  if (input.mode === 'manual') {
+  if (isManual(input)) {
     const requested = parseModelInput(input.requestedModel);
     const picked: ModelCandidate[] = [];
     const seen = new Set<string>();

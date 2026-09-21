@@ -34,3 +34,6 @@ export type {
 
 export { estimateAudioSeconds, pcm16Rms, pcm16ToWav, SilenceDetector } from './audio.js';
 export type { SilenceDetectorOptions } from './audio.js';
+
+export { PhraseChunker } from './phrases.js';
+export type { Phrase, PhraseChunkerOptions } from './phrases.js';

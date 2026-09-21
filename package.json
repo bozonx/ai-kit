@@ -29,8 +29,8 @@
       "import": "./dist/translate/index.js"
     },
     "./stream": {
-      "types": "./dist/stream/stream-parts.d.ts",
-      "import": "./dist/stream/stream-parts.js"
+      "types": "./dist/stream/index.d.ts",
+      "import": "./dist/stream/index.js"
     },
     "./package.json": "./package.json"
   },

@@ -1,16 +1,23 @@
 import type { Catalog } from '../catalog/catalog.js';
 import { calculateSttCost } from '../catalog/pricing.js';
-import type { TaskClass } from '../catalog/schema.js';
-import { AiError } from '../errors.js';
+import { AiError, callStatusFor } from '../errors.js';
 import { attemptCandidates, type AttemptDeps, type AttemptRequest } from '../execute/attempt.js';
 import { classifyError } from '../execute/classify.js';
-import { selectCandidates, type ModelCandidate } from '../policy/policy.js';
-import type { CallStatus, RoutedBy, TokenUsage, UsageSink } from '../ports.js';
+import { NO_TOKENS, recordCall } from '../execute/record.js';
+import {
+  candidatePolicyOf,
+  selectCandidates,
+  type CandidatePolicy,
+  type ModelCandidate,
+} from '../policy/policy.js';
+import { quoteCandidate, type CandidatePlan } from '../policy/quote.js';
+import type { CallStatus, UsageSink } from '../ports.js';
 import { assertSttCapabilities } from './policy.js';
 import type { SttProviderRegistry } from './registry.js';
 import type {
   AudioChunk,
   AudioSource,
+  SttAccounting,
   TranscriptPart,
   TranscriptSegment,
   TranscriptionOptions,
@@ -27,33 +34,23 @@ import type {
  * into has to be closed rather than left open.
  */
 
-const NO_TOKENS: TokenUsage = {
-  inputTokens: 0,
-  outputTokens: 0,
-  cachedInputTokens: 0,
-  reasoningTokens: 0,
-};
-
 export interface SttExecutionDeps extends AttemptDeps {
   catalog: Catalog;
   registry: SttProviderRegistry;
   usage: UsageSink;
 }
 
-/** Which model, in the same two modes the text side has. */
-export interface SttPolicyInput {
-  /** `manual` honours `requestedModel`; `auto` follows the catalog's order. */
-  mode: 'auto' | 'manual';
-  /** A task class the catalog serves with speech models. */
-  taskClass: TaskClass;
-  requestedModel?: string | string[];
-  /** Routes the caller does not want tried first, by their own route id. */
-  demotedRoutes?: ReadonlySet<string>;
-}
+/** Which model, in the same terms the text side uses. */
+export type SttPolicyInput = CandidatePolicy;
 
 interface CommonSttRequest extends AttemptRequest {
   policy: SttPolicyInput;
   options?: TranscriptionOptions;
+  /**
+   * A plan from `AiKit.planTranscription` for this same request, so the call
+   * tries exactly the models the caller quoted and reserved for.
+   */
+  plan?: CandidatePlan;
 }
 
 export interface TranscribeRequest extends CommonSttRequest {
@@ -67,87 +64,100 @@ export interface StreamTranscribeRequest extends CommonSttRequest {
   sampleRate?: number;
 }
 
-/** What a finished transcription cost and who produced it. */
-export interface SttAccounting {
-  provider: string;
-  model: string;
-  /** The consumer's own id for the route that answered, when it gave one. */
-  routeId?: string;
-  routedBy: RoutedBy;
-  audioSeconds: number;
-  costMicros: number;
-  priceVersion: string;
-  attempts: number;
-  latencyMs: number;
-}
+export type { SttAccounting } from './types.js';
 
 export interface TranscribeResult extends SttAccounting, TranscriptionResult {}
 
 const DEFAULT_SAMPLE_RATE = 16_000;
 
-function pickCandidates(
-  deps: SttExecutionDeps,
-  policy: SttPolicyInput,
-  options: TranscriptionOptions,
-  realtime: boolean,
-): ModelCandidate[] {
+/** What a transcription is expected to take, for its quotes. */
+export interface SttPlanUsage {
+  /** Seconds of audio: the file's length, or how long a live session may run. */
+  audioSeconds: number;
+  /** A live session, which is priced and filtered as one. Default false. */
+  realtime?: boolean;
+}
+
+/**
+ * The models a transcription would try and what each could cost.
+ *
+ * @throws AiError('invalid_request') when the task class is not served by
+ *   speech models, and NoSuitableModelError when none fits.
+ */
+export function planTranscribe(
+  catalog: Catalog,
+  request: Pick<CommonSttRequest, 'policy' | 'options'>,
+  usage: SttPlanUsage,
+): CandidatePlan {
+  const policy = request.policy;
   // An unknown or text-shaped task class is refused rather than defaulted:
   // guessing here would route somebody's audio to whichever model happened to
   // be first in a list written for something else.
-  if (deps.catalog.kindOf(policy.taskClass) !== 'stt') {
+  if (catalog.kindOf(policy.taskClass) !== 'stt') {
     throw new AiError('invalid_request', `Task class "${policy.taskClass}" is not a speech task`);
   }
 
-  return selectCandidates(
-    {
-      mode: policy.mode,
-      taskClass: policy.taskClass,
-      requestedModel: policy.requestedModel,
-      ...(policy.demotedRoutes === undefined ? {} : { demotedRoutes: policy.demotedRoutes }),
-      signals: {
-        estimatedInputTokens: 0,
-        language: options.language,
-        needsRealtime: realtime,
-        needsWordTimings: options.wordTimings,
-        needsDiarization: options.diarization,
-      },
+  const options = request.options ?? {};
+  const realtime = usage.realtime ?? false;
+  const input = {
+    ...candidatePolicyOf(policy),
+    signals: {
+      estimatedInputTokens: 0,
+      language: options.language,
+      needsRealtime: realtime,
+      needsWordTimings: options.wordTimings,
+      needsDiarization: options.diarization,
     },
-    deps.catalog,
+  };
+  const candidates = selectCandidates(input, catalog);
+  return {
+    candidates,
+    quotes: candidates.map(candidate => ({
+      candidate,
+      costMicros: quoteCandidate(candidate, input, {
+        audioSeconds: usage.audioSeconds,
+        realtime,
+        ...(options.diarization === undefined ? {} : { diarization: options.diarization }),
+      }),
+    })),
+  };
+}
+
+function pickCandidates(
+  deps: SttExecutionDeps,
+  request: CommonSttRequest,
+  realtime: boolean,
+): ModelCandidate[] {
+  return (
+    request.plan?.candidates ??
+    planTranscribe(deps.catalog, request, { audioSeconds: 0, realtime }).candidates
   );
 }
 
-async function record(
+function record(
   deps: SttExecutionDeps,
   request: CommonSttRequest,
   data: SttAccounting,
   status: CallStatus,
 ): Promise<void> {
-  deps.trace.generation({
-    traceId: request.traceId,
+  return recordCall(deps, {
     name: request.name ?? 'transcribe',
-    provider: data.provider,
-    model: data.model,
-    startedAt: deps.clock.now() - data.latencyMs,
-    endedAt: deps.clock.now(),
-    costMicros: data.costMicros,
-    status,
-    metadata: { audioSeconds: data.audioSeconds },
-  });
-
-  await deps.usage.record({
-    provider: data.provider,
-    model: data.model,
-    ...(data.routeId === undefined ? {} : { routeId: data.routeId }),
-    routedBy: data.routedBy,
-    usage: NO_TOKENS,
-    audioSeconds: data.audioSeconds,
-    characters: 0,
-    costMicros: data.costMicros,
-    priceVersion: data.priceVersion,
-    status,
-    latencyMs: data.latencyMs,
-    attempts: data.attempts,
-    traceId: request.traceId,
+    event: {
+      provider: data.provider,
+      model: data.model,
+      ...(data.routeId === undefined ? {} : { routeId: data.routeId }),
+      routedBy: data.routedBy,
+      usage: NO_TOKENS,
+      audioSeconds: data.audioSeconds,
+      characters: 0,
+      costMicros: data.costMicros,
+      priceVersion: data.priceVersion,
+      status,
+      latencyMs: data.latencyMs,
+      attempts: data.attempts,
+      ...(request.traceId === undefined ? {} : { traceId: request.traceId }),
+    },
+    trace: { metadata: { audioSeconds: data.audioSeconds } },
   });
 }
 
@@ -192,7 +202,7 @@ export async function runTranscribe(
   request: TranscribeRequest,
 ): Promise<TranscribeResult> {
   const options = request.options ?? {};
-  const candidates = pickCandidates(deps, request.policy, options, false);
+  const candidates = pickCandidates(deps, request, false);
   const startedAt = deps.clock.now();
 
   const outcome = await attemptCandidates(deps, candidates, request, {
@@ -237,7 +247,7 @@ export async function* runTranscribeStream(
   request: StreamTranscribeRequest,
 ): AsyncGenerator<TranscriptPart, void, undefined> {
   const options = request.options ?? {};
-  const candidates = pickCandidates(deps, request.policy, options, true);
+  const candidates = pickCandidates(deps, request, true);
   const sampleRate = request.sampleRate ?? DEFAULT_SAMPLE_RATE;
   const startedAt = deps.clock.now();
 
@@ -305,7 +315,7 @@ export async function* runTranscribeStream(
       model: candidate.model.name,
       callerAborted: request.abortSignal?.aborted,
     });
-    status = failure.kind === 'aborted' ? 'aborted' : 'error';
+    status = callStatusFor(failure.kind);
   }
 
   // Billed on the time the session was open, not on the words that came out of
@@ -322,12 +332,7 @@ export async function* runTranscribeStream(
   );
   await record(deps, request, data, status);
 
-  yield {
-    type: 'usage',
-    audioSeconds: data.audioSeconds,
-    costMicros: data.costMicros,
-    priceVersion: data.priceVersion,
-  };
+  yield { type: 'usage', ...data };
 
   if (failure) {
     yield {

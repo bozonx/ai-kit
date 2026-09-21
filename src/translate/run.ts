@@ -1,10 +1,16 @@
 import type { Catalog } from '../catalog/catalog.js';
 import { calculateMtCost } from '../catalog/pricing.js';
-import type { TaskClass } from '../catalog/schema.js';
 import { AiError } from '../errors.js';
 import { attemptCandidates, type AttemptDeps, type AttemptRequest } from '../execute/attempt.js';
-import { selectCandidates, type ModelCandidate } from '../policy/policy.js';
-import type { CallStatus, RoutedBy, TokenUsage, UsageSink } from '../ports.js';
+import { NO_TOKENS, recordCall } from '../execute/record.js';
+import {
+  candidatePolicyOf,
+  selectCandidates,
+  type CandidatePolicy,
+  type ModelCandidate,
+} from '../policy/policy.js';
+import { quoteCandidate, type CandidatePlan } from '../policy/quote.js';
+import type { CallStatus, RoutedBy, UsageSink } from '../ports.js';
 import type { MtProviderRegistry } from './registry.js';
 import type { TranslationFormat, TranslationResult } from './types.js';
 
@@ -19,27 +25,14 @@ import type { TranslationFormat, TranslationResult } from './types.js';
  * a language model.
  */
 
-const NO_TOKENS: TokenUsage = {
-  inputTokens: 0,
-  outputTokens: 0,
-  cachedInputTokens: 0,
-  reasoningTokens: 0,
-};
-
 export interface MtExecutionDeps extends AttemptDeps {
   catalog: Catalog;
   registry: MtProviderRegistry;
   usage: UsageSink;
 }
 
-export interface MtPolicyInput {
-  /** `manual` honours `requestedModel`; `auto` follows the catalog's order. */
-  mode: 'auto' | 'manual';
-  taskClass: TaskClass;
-  requestedModel?: string | string[];
-  /** Routes the caller does not want tried first, by their own route id. */
-  demotedRoutes?: ReadonlySet<string>;
-}
+/** Which engine, in the same terms every other kind of call uses. */
+export type MtPolicyInput = CandidatePolicy;
 
 export interface TranslateRequest extends AttemptRequest {
   policy: MtPolicyInput;
@@ -47,6 +40,11 @@ export interface TranslateRequest extends AttemptRequest {
   targetLanguage: string;
   sourceLanguage?: string;
   format?: TranslationFormat;
+  /**
+   * A plan from `AiKit.planTranslation` for this same request, so the call
+   * tries exactly the engines the caller quoted and reserved for.
+   */
+  plan?: CandidatePlan;
 }
 
 /** What a finished translation cost and who produced it. */
@@ -69,6 +67,46 @@ export interface TranslateResult extends MtAccounting, TranslationResult {}
 /** Characters the engine is handed, which is what every one of them bills. */
 export function countCharacters(texts: readonly string[]): number {
   return texts.reduce((total, text) => total + text.length, 0);
+}
+
+/**
+ * The engines a translation would try and what each would charge, exactly.
+ *
+ * @throws AiError('invalid_request') when the task class is not served by
+ *   translation engines, and NoSuitableModelError when none fits.
+ */
+export function planTranslate(
+  catalog: Catalog,
+  request: Omit<TranslateRequest, 'plan'>,
+): CandidatePlan {
+  // An unknown or text-shaped task class is refused rather than defaulted:
+  // routing a translation to whichever model happened to be first in a list
+  // written for something else is how a dedicated engine quietly becomes a
+  // chat model at twenty times the price.
+  if (catalog.kindOf(request.policy.taskClass) !== 'mt') {
+    throw new AiError(
+      'invalid_request',
+      `Task class "${request.policy.taskClass}" is not a machine translation task`,
+    );
+  }
+
+  const policy = {
+    ...candidatePolicyOf(request.policy),
+    signals: {
+      estimatedInputTokens: 0,
+      ...(request.sourceLanguage === undefined ? {} : { language: request.sourceLanguage }),
+      needsHtml: request.format === 'html',
+    },
+  };
+  const characters = countCharacters(request.texts);
+  const candidates = selectCandidates(policy, catalog);
+  return {
+    candidates,
+    quotes: candidates.map(candidate => ({
+      candidate,
+      costMicros: quoteCandidate(candidate, policy, { characters }),
+    })),
+  };
 }
 
 function priceIt(
@@ -98,38 +136,30 @@ function priceIt(
   };
 }
 
-async function record(
+function record(
   deps: MtExecutionDeps,
   request: TranslateRequest,
   data: MtAccounting,
   status: CallStatus,
 ): Promise<void> {
-  deps.trace.generation({
-    traceId: request.traceId,
+  return recordCall(deps, {
     name: request.name ?? 'translate',
-    provider: data.provider,
-    model: data.model,
-    startedAt: deps.clock.now() - data.latencyMs,
-    endedAt: deps.clock.now(),
-    costMicros: data.costMicros,
-    status,
-    metadata: { characters: data.characters, targetLanguage: request.targetLanguage },
-  });
-
-  await deps.usage.record({
-    provider: data.provider,
-    model: data.model,
-    ...(data.routeId === undefined ? {} : { routeId: data.routeId }),
-    routedBy: data.routedBy,
-    usage: NO_TOKENS,
-    audioSeconds: 0,
-    characters: data.characters,
-    costMicros: data.costMicros,
-    priceVersion: data.priceVersion,
-    status,
-    latencyMs: data.latencyMs,
-    attempts: data.attempts,
-    traceId: request.traceId,
+    event: {
+      provider: data.provider,
+      model: data.model,
+      ...(data.routeId === undefined ? {} : { routeId: data.routeId }),
+      routedBy: data.routedBy,
+      usage: NO_TOKENS,
+      audioSeconds: 0,
+      characters: data.characters,
+      costMicros: data.costMicros,
+      priceVersion: data.priceVersion,
+      status,
+      latencyMs: data.latencyMs,
+      attempts: data.attempts,
+      ...(request.traceId === undefined ? {} : { traceId: request.traceId }),
+    },
+    trace: { metadata: { characters: data.characters, targetLanguage: request.targetLanguage } },
   });
 }
 
@@ -138,37 +168,8 @@ export async function runTranslate(
   deps: MtExecutionDeps,
   request: TranslateRequest,
 ): Promise<TranslateResult> {
-  // An unknown or text-shaped task class is refused rather than defaulted:
-  // routing a translation to whichever model happened to be first in a list
-  // written for something else is how a dedicated engine quietly becomes a
-  // chat model at twenty times the price.
-  if (deps.catalog.kindOf(request.policy.taskClass) !== 'mt') {
-    throw new AiError(
-      'invalid_request',
-      `Task class "${request.policy.taskClass}" is not a machine translation task`,
-    );
-  }
-
+  const candidates = request.plan?.candidates ?? planTranslate(deps.catalog, request).candidates;
   const characters = countCharacters(request.texts);
-  const candidates = selectCandidates(
-    {
-      mode: request.policy.mode,
-      taskClass: request.policy.taskClass,
-      ...(request.policy.requestedModel === undefined
-        ? {}
-        : { requestedModel: request.policy.requestedModel }),
-      ...(request.policy.demotedRoutes === undefined
-        ? {}
-        : { demotedRoutes: request.policy.demotedRoutes }),
-      signals: {
-        estimatedInputTokens: 0,
-        ...(request.sourceLanguage === undefined ? {} : { language: request.sourceLanguage }),
-        needsHtml: request.format === 'html',
-      },
-    },
-    deps.catalog,
-  );
-
   const startedAt = deps.clock.now();
 
   const outcome = await attemptCandidates(deps, candidates, request, {

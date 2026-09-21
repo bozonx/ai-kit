@@ -53,6 +53,47 @@ belong to a consumer had been written into the library.
   `@bozonx/ai-kit/translate` (`googleCloudTranslationProvider`, glossary,
   quality detectors, the adapter interfaces).
 
+### Changed (boundary review, before publication)
+
+- **Sinks are best effort.** A `UsageSink` or `TraceSink` that throws no longer
+  fails a call that has already been answered and paid for; a failed usage
+  write is reported as a `<name>.usage-failed` span. All four kinds of call
+  record through one path (`execute/record.ts`) instead of four copies.
+- **A call that ends without an answer is recorded.** Every candidate failed,
+  the budget ran out or the caller aborted: the `UsageSink` and
+  `TraceSink.generation` hear about it at zero cost, with its status, the
+  attempts it took and the error. Before, such a call reached neither.
+- **The `usage` part of a stream is the full `CallAccounting`** — provider,
+  model, `routeId`, `routedBy`, attempts and latency as well as tokens and
+  cost — and the speech stream's `usage` part is the full `SttAccounting`.
+  Consumers were rebuilding both from the `model` part and guessing at the
+  attempts. `CallAccounting` now lives in `ports.ts`, `SttAccounting` in
+  `stt/types.ts`; both are still exported from where they were.
+- **A stream stopped after reasoning or tool calls alone is billed.** The
+  estimate for a cancelled stream counted only answer text, so a stream that
+  had only reasoned was recorded with no output. Any visible part now counts,
+  and a failure after one is a `stream_interrupted`.
+- **`mode` is optional** on every policy (`CandidatePolicy`, now shared by
+  text, speech, translation and embeddings): left out, a policy is `manual`
+  exactly when `requestedModel` names something. `isManual` is exported.
+- **`signals` are optional on a language-model request** (`RequestPolicy`), and
+  so is each field: the size of the request and its images are read off the
+  messages when the caller does not say.
+- **`kit.planTranslation` and `kit.planTranscription`** do for speech and
+  translation what `kit.plan` does for text: one selection, quoted, handed back
+  as `plan` so the call tries exactly what the caller reserved for.
+  `CallPlan` extends the new `CandidatePlan`.
+
+### Added (boundary review, before publication)
+
+- `encodeSse` and `SseDecoder` in `@bozonx/ai-kit/stream`: both halves of the
+  SSE wire for stream parts, handling split events, CRLF and comments. The
+  `./stream` entry point is now `dist/stream/index.js` and also re-exports
+  `CallAccounting`, `RoutedBy`, `TokenUsage` and `AiErrorKind` as types.
+- `PhraseChunker` in `@bozonx/ai-kit/stt`: live PCM cut into phrases on a
+  pause or at a ceiling, each with its offset in the session, for dictation
+  over a batch model.
+
 ### Changed — breaking (added before publication)
 
 - **The built-in Cloud Translation adapter is `google-translate`, not

@@ -1,4 +1,4 @@
-import type { RoutedBy, TokenUsage } from '../ports.js';
+import type { CallAccounting, RoutedBy } from '../ports.js';
 import type { AiErrorKind } from '../errors.js';
 
 /**
@@ -64,11 +64,14 @@ export interface SourcesPart {
  * Final accounting. Arrives once, after the last piece of the answer and before
  * `finish` or `error` — a stream that failed half way was still paid for.
  */
-export interface UsagePart {
+/**
+ * The call's full accounting, the same fields `generate` returns.
+ *
+ * A consumer that bills from a stream needs the attempts and the route as much
+ * as the cost, and rebuilding them from the `model` part guesses at both.
+ */
+export interface UsagePart extends CallAccounting {
   type: 'usage';
-  usage: TokenUsage;
-  costMicros: number;
-  priceVersion: string;
 }
 
 /**

@@ -41,6 +41,20 @@ export interface CandidateQuote {
 }
 
 /**
+ * A call decided but not made: which candidates, in what order, and what each
+ * could cost at worst.
+ *
+ * A consumer that reserves budget needs the quotes before the call and the call
+ * needs the candidates; handing the same plan to both is what keeps the hold
+ * and the attempt about the same models. Every call accepts one as `plan`.
+ */
+export interface CandidatePlan {
+  candidates: ModelCandidate[];
+  /** Every candidate with its worst-case cost, in the same order. */
+  quotes: CandidateQuote[];
+}
+
+/**
  * Every candidate `selectCandidates` would try, each with its worst-case cost.
  *
  * A language model is priced against `input.signals.estimatedInputTokens` and

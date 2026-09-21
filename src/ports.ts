@@ -85,6 +85,27 @@ export interface TokenUsage {
 }
 
 /**
+ * What a finished language-model call cost and who produced it.
+ *
+ * Declared here rather than next to the executor so that the stream vocabulary
+ * can carry it: a browser importing `@bozonx/ai-kit/stream` must not have to
+ * resolve the AI SDK's types to read a usage part.
+ */
+export interface CallAccounting {
+  provider: string;
+  model: string;
+  /** The consumer's own id for the route that answered, when it gave one. */
+  routeId?: string;
+  routedBy: RoutedBy;
+  usage: TokenUsage;
+  costMicros: number;
+  priceVersion: string;
+  /** Provider requests made, retries and fallbacks included. */
+  attempts: number;
+  latencyMs: number;
+}
+
+/**
  * One model call, priced.
  *
  * Everything a consumer needs to bill, attribute and audit the call. In

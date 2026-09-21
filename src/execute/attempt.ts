@@ -1,8 +1,9 @@
 import { AiError, AllCandidatesFailedError, type CandidateFailure } from '../errors.js';
 import type { ModelCandidate } from '../policy/policy.js';
-import type { AttemptObserver, Clock, TraceSink } from '../ports.js';
+import type { AttemptObserver, Clock, TraceSink, UsageSink } from '../ports.js';
 import type { KeyOverrides } from '../providers/client-cache.js';
 import { classifyError } from './classify.js';
+import { recordFailure } from './record.js';
 
 /**
  * Walking the candidate list: try, retry, fall back, give up.
@@ -50,6 +51,8 @@ export interface AttemptDeps {
   retry: RetryPolicy;
   /** Optional so that hand-assembled dependencies keep compiling. */
   attempts?: AttemptObserver;
+  /** Told about a call that ended without an answer, at zero cost. */
+  usage?: UsageSink;
 }
 
 export interface AttemptOutcome<R> {
@@ -95,7 +98,9 @@ function attemptSignal(deadline: number, clock: Clock, caller?: AbortSignal): Ab
 }
 
 /**
- * Walks the candidate list, retrying each one under the rules of 7.4.
+ * Walks the candidate list: retries a retryable failure on the same candidate
+ * with backoff, moves on to the next one otherwise, and gives up when the list
+ * or the call's time budget runs out.
  *
  * A caller that has already shown output opts out of retrying by not coming
  * back here: everything past the first visible part belongs to the model that
@@ -105,6 +110,10 @@ function attemptSignal(deadline: number, clock: Clock, caller?: AbortSignal): Ab
  * `prepare` builds the client for a candidate. It is inside the attempt on
  * purpose: a provider with no key configured is that provider's failure, not
  * the whole call's, and the next candidate deserves its turn.
+ *
+ * A call that ends without an answer — every candidate failed, the budget ran
+ * out, the caller aborted — is recorded here at zero cost before the failure
+ * is thrown, so every kind of call reports its failures the same way.
  */
 export async function attemptCandidates<C, R>(
   deps: AttemptDeps,
@@ -121,83 +130,108 @@ export async function attemptCandidates<C, R>(
     ...deps.retry,
     totalTimeoutMs: request.totalTimeoutMs ?? deps.retry.totalTimeoutMs,
   };
-  const deadline = deps.clock.now() + retry.totalTimeoutMs;
+  const startedAt = deps.clock.now();
+  const deadline = startedAt + retry.totalTimeoutMs;
   const failures: CandidateFailure[] = [];
   const name = request.name ?? steps.operation ?? 'generate';
   let attempts = 0;
+  let current = candidates[0];
 
-  for (const candidate of candidates) {
-    for (let tryIndex = 0; tryIndex <= retry.maxRetriesPerCandidate; tryIndex += 1) {
-      if (request.abortSignal?.aborted) {
-        throw new AiError('aborted', 'The call was aborted');
-      }
-      if (deps.clock.now() >= deadline) {
-        throw new AiError('timeout', 'The call ran out of its time budget');
-      }
-
-      attempts += 1;
-      try {
-        const client = await steps.prepare(candidate);
-        const value = await steps.run({
-          client,
-          candidate,
-          signal: attemptSignal(deadline, deps.clock, request.abortSignal),
-        });
-        return { value, candidate, attempts };
-      } catch (error) {
-        const classified = classifyError(error, {
-          provider: candidate.route.provider,
-          model: candidate.model.name,
-          callerAborted: request.abortSignal?.aborted,
-        });
-
-        if (classified.kind === 'aborted' || classified.kind === 'stream_interrupted') {
-          throw classified;
-        }
-
-        const routeId = candidate.route.id;
-        failures.push({
-          provider: candidate.route.provider,
-          model: candidate.model.name,
-          ...(routeId === undefined ? {} : { routeId }),
-          error: classified,
-        });
-
-        deps.attempts?.failed({
-          ...(request.traceId === undefined ? {} : { traceId: request.traceId }),
-          name,
-          provider: candidate.route.provider,
-          model: candidate.model.name,
-          ...(routeId === undefined ? {} : { routeId }),
-          kind: classified.kind,
-          message: classified.message,
-        });
-
-        deps.trace.span({
-          traceId: request.traceId,
-          name: `${name}.attempt-failed`,
-          startedAt: deps.clock.now(),
-          endedAt: deps.clock.now(),
-          metadata: {
-            provider: candidate.route.provider,
-            model: candidate.model.name,
-            routeId,
-            kind: classified.kind,
-          },
-        });
-
-        const canRetrySameModel = classified.retryable && tryIndex < retry.maxRetriesPerCandidate;
-        if (!canRetrySameModel) break;
-
-        const wait = backoffMs(tryIndex, retry);
-        if (deps.clock.now() + wait >= deadline) break;
-        await sleep(wait, request.abortSignal);
-      }
+  try {
+    return await walk();
+  } catch (error) {
+    const failure =
+      error instanceof AiError
+        ? error
+        : classifyError(error, { callerAborted: request.abortSignal?.aborted });
+    if (current) {
+      await recordFailure(deps, {
+        name,
+        candidate: current,
+        error: failure,
+        attempts,
+        latencyMs: deps.clock.now() - startedAt,
+        ...(request.traceId === undefined ? {} : { traceId: request.traceId }),
+      });
     }
+    throw error;
   }
 
-  // A single non-retryable failure explains itself better than a list of one.
-  const only = failures.length === 1 ? failures[0] : undefined;
-  if (only) throw only.error;
-  throw new AllCandidatesFailedError(failures);
+  async function walk(): Promise<AttemptOutcome<R>> {
+    for (const candidate of candidates) {
+      current = candidate;
+      for (let tryIndex = 0; tryIndex <= retry.maxRetriesPerCandidate; tryIndex += 1) {
+        if (request.abortSignal?.aborted) {
+          throw new AiError('aborted', 'The call was aborted');
+        }
+        if (deps.clock.now() >= deadline) {
+          throw new AiError('timeout', 'The call ran out of its time budget');
+        }
+
+        attempts += 1;
+        try {
+          const client = await steps.prepare(candidate);
+          const value = await steps.run({
+            client,
+            candidate,
+            signal: attemptSignal(deadline, deps.clock, request.abortSignal),
+          });
+          return { value, candidate, attempts };
+        } catch (error) {
+          const classified = classifyError(error, {
+            provider: candidate.route.provider,
+            model: candidate.model.name,
+            callerAborted: request.abortSignal?.aborted,
+          });
+
+          if (classified.kind === 'aborted' || classified.kind === 'stream_interrupted') {
+            throw classified;
+          }
+
+          const routeId = candidate.route.id;
+          failures.push({
+            provider: candidate.route.provider,
+            model: candidate.model.name,
+            ...(routeId === undefined ? {} : { routeId }),
+            error: classified,
+          });
+
+          deps.attempts?.failed({
+            ...(request.traceId === undefined ? {} : { traceId: request.traceId }),
+            name,
+            provider: candidate.route.provider,
+            model: candidate.model.name,
+            ...(routeId === undefined ? {} : { routeId }),
+            kind: classified.kind,
+            message: classified.message,
+          });
+
+          deps.trace.span({
+            traceId: request.traceId,
+            name: `${name}.attempt-failed`,
+            startedAt: deps.clock.now(),
+            endedAt: deps.clock.now(),
+            metadata: {
+              provider: candidate.route.provider,
+              model: candidate.model.name,
+              routeId,
+              kind: classified.kind,
+            },
+          });
+
+          const canRetrySameModel = classified.retryable && tryIndex < retry.maxRetriesPerCandidate;
+          if (!canRetrySameModel) break;
+
+          const wait = backoffMs(tryIndex, retry);
+          if (deps.clock.now() + wait >= deadline) break;
+          await sleep(wait, request.abortSignal);
+        }
+      }
+    }
+
+    // A single non-retryable failure explains itself better than a list of one.
+    const only = failures.length === 1 ? failures[0] : undefined;
+    if (only) throw only.error;
+    throw new AllCandidatesFailedError(failures);
+  }
 }

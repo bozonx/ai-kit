@@ -14,8 +14,8 @@
  * This entry point is the kit and everything needed to call it. Speech and
  * translation extras — provider adapters, subtitles, audio helpers, glossary
  * and quality checks — live in `@bozonx/ai-kit/stt` and
- * `@bozonx/ai-kit/translate`; the stream vocabulary alone, for a browser, in
- * `@bozonx/ai-kit/stream`.
+ * `@bozonx/ai-kit/translate`; the stream vocabulary and its SSE codec, for a
+ * browser, in `@bozonx/ai-kit/stream`.
  */
 
 export { Catalog } from './catalog/catalog.js';
@@ -92,6 +92,7 @@ export type { AiErrorKind, AiErrorOptions, CandidateFailure } from './errors.js'
 
 export { noopAttemptObserver, noopTraceSink, noopUsageSink, systemClock } from './ports.js';
 export type {
+  CallAccounting,
   KeyProvider,
   UsageSink,
   TraceSink,
@@ -142,13 +143,18 @@ export type { AiKit, AiKitOptions } from './kit.js';
 
 export type { ProviderFactory, EmbeddingProviderFactory } from './providers/registry.js';
 
-export { selectCandidates, fitsSignals, speaksLanguage } from './policy/policy.js';
-export type { PolicyInput, PolicySignals, ModelCandidate } from './policy/policy.js';
+export { selectCandidates, fitsSignals, speaksLanguage, isManual } from './policy/policy.js';
+export type {
+  CandidatePolicy,
+  PolicyInput,
+  PolicySignals,
+  ModelCandidate,
+} from './policy/policy.js';
 
 export { signalsFor } from './policy/signals.js';
 
 export { quoteCandidates } from './policy/quote.js';
-export type { QuoteUsage, CandidateQuote } from './policy/quote.js';
+export type { QuoteUsage, CandidateQuote, CandidatePlan } from './policy/quote.js';
 
 export { DEFAULT_RETRY_POLICY } from './execute/run.js';
 export type {
@@ -156,7 +162,7 @@ export type {
   GenerateRequest,
   GenerateResult,
   StreamRequest,
-  CallAccounting,
+  RequestPolicy,
   ProviderOptions,
   ToolActivity,
   CallPlan,
@@ -176,6 +182,7 @@ export type { ClassifyContext } from './execute/classify.js';
 export type {
   SttPolicyInput,
   SttAccounting,
+  SttPlanUsage,
   TranscribeRequest,
   TranscribeResult,
   StreamTranscribeRequest,
