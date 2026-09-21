@@ -1,6 +1,7 @@
-import { AiError, AllCandidatesFailedError } from '../errors.js';
+import { AiError, AllCandidatesFailedError, type CandidateFailure } from '../errors.js';
 import type { ModelCandidate } from '../policy/policy.js';
-import type { Clock, TraceSink } from '../ports.js';
+import type { AttemptObserver, Clock, TraceSink } from '../ports.js';
+import type { KeyOverrides } from '../providers/client-cache.js';
 import { classifyError } from './classify.js';
 
 /**
@@ -36,12 +37,19 @@ export interface AttemptRequest {
   totalTimeoutMs?: number;
   traceId?: string;
   name?: string;
+  /**
+   * Credentials for this call only, by provider id, applied over the kit's
+   * `KeyProvider`. A customer's own key, typically.
+   */
+  keys?: KeyOverrides;
 }
 
 export interface AttemptDeps {
   trace: TraceSink;
   clock: Clock;
   retry: RetryPolicy;
+  /** Optional so that hand-assembled dependencies keep compiling. */
+  attempts?: AttemptObserver;
 }
 
 export interface AttemptOutcome<R> {
@@ -112,7 +120,7 @@ export async function attemptCandidates<C, R>(
     totalTimeoutMs: request.totalTimeoutMs ?? deps.retry.totalTimeoutMs,
   };
   const deadline = deps.clock.now() + retry.totalTimeoutMs;
-  const failures: Array<{ provider: string; model: string; error: AiError }> = [];
+  const failures: CandidateFailure[] = [];
   let attempts = 0;
 
   for (const candidate of candidates) {
@@ -144,10 +152,22 @@ export async function attemptCandidates<C, R>(
           throw classified;
         }
 
+        const routeId = candidate.route.id;
         failures.push({
           provider: candidate.route.provider,
           model: candidate.model.name,
+          ...(routeId === undefined ? {} : { routeId }),
           error: classified,
+        });
+
+        deps.attempts?.failed({
+          ...(request.traceId === undefined ? {} : { traceId: request.traceId }),
+          name: request.name ?? 'generate',
+          provider: candidate.route.provider,
+          model: candidate.model.name,
+          ...(routeId === undefined ? {} : { routeId }),
+          kind: classified.kind,
+          message: classified.message,
         });
 
         deps.trace.span({
@@ -158,6 +178,7 @@ export async function attemptCandidates<C, R>(
           metadata: {
             provider: candidate.route.provider,
             model: candidate.model.name,
+            routeId,
             kind: classified.kind,
           },
         });

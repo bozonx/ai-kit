@@ -5,7 +5,7 @@ The part of an AI feature that is the same in every product.
 Not a model router, and no longer a microservice: a library you call in-process.
 It holds a priced model catalog, the rules for choosing a model and retrying a
 call, the vocabulary a streamed answer is made of, error classification, and the
-ports through which a host supplies keys, shared state and observability.
+ports through which a host supplies keys and observability.
 
 It deliberately holds nothing about tenants, users, projects, permissions,
 storage or money. If a component needs one of those words, it belongs to the
@@ -27,6 +27,20 @@ pnpm add @bozonx/ai-kit
 
 During development, consume it through a workspace link so that changes are
 visible without publishing.
+
+## Entry points
+
+| Import | What is in it |
+|---|---|
+| `@bozonx/ai-kit` | `createAiKit` and everything needed to call it: the catalog, pricing, policy, errors, ports, prompt assembly, request and result types |
+| `@bozonx/ai-kit/stt` | Speech extras: provider adapters, subtitles, word segmentation, audio helpers (`estimateAudioSeconds`, `SilenceDetector`, `pcm16ToWav`) |
+| `@bozonx/ai-kit/translate` | Translation extras: the Cloud Translation adapter, the binding glossary, the quality detectors |
+| `@bozonx/ai-kit/stream` | The stream-part types alone, for a browser |
+
+The kit is the way to call a model. The loops underneath it — retry, fallback,
+pricing — are not exported on their own: a consumer that needs something the
+kit does not offer should get it added to the kit rather than reassemble the
+kit's internals by hand.
 
 ## The catalog
 
@@ -123,9 +137,45 @@ and never removes it.
 ## Ports
 
 Everything the library needs from the outside arrives through `src/ports.ts`:
-`KeyProvider`, `UsageSink`, `TraceSink`, `Clock`. All are optional except keys —
-a library that cannot be called until five interfaces are implemented gets
-worked around instead of used.
+`KeyProvider`, `UsageSink`, `TraceSink`, `AttemptObserver`, `Clock`. All are
+optional except keys — a library that cannot be called until five interfaces
+are implemented gets worked around instead of used.
+
+`AttemptObserver` hears about every candidate that failed, by `routeId`,
+including the ones a fallback then covered for. The result of a call only
+names the route that answered, so this is what a consumer's route health
+automation feeds on. `AllCandidatesFailedError.failures` carries the same
+`routeId` for the case where nothing answered.
+
+### A customer's own key
+
+Every request takes `keys`: credentials for that call only, by provider id,
+applied over the `KeyProvider`. There is no need to build a kit per customer.
+
+```ts
+await kit.transcribe({
+  policy: { mode: 'auto', taskClass: 'transcription' },
+  source: { url },
+  keys: { deepgram: customerKey },
+});
+```
+
+Clients are cached per provider, endpoint, model and a hash of the whole key,
+with a bounded least-recently-used cache, so per-call keys neither leak memory
+nor share a client between two customers.
+
+## Quoting before a call
+
+A consumer that reserves budget has to hold enough for the dearest candidate
+in the fallback chain, not only the first. `quoteCandidates` lists every
+candidate `selectCandidates` would try with its worst-case cost — tokens for a
+language model, seconds for speech, characters for an engine — and leaves the
+choice of maximum to the caller, whose markup may depend on the price:
+
+```ts
+const quotes = quoteCandidates(policy, kit.catalog, { characters: 12_000 });
+const hold = Math.max(0, ...quotes.map(quote => quote.costMicros));
+```
 
 ## Streaming
 
@@ -134,6 +184,12 @@ worked around instead of used.
 `usage`, `error`, `finish`. The consumer's frontend imports the type rather than
 describing it a second time, because two hand-written copies of a wire format
 drift the first time a field is added.
+
+`usage` arrives once, after the answer and before `finish` or `error`. A
+consumer may stop reading at any point: the provider request is then cancelled
+and the call is still recorded through the `UsageSink`, as `aborted`, with
+whatever it produced. `callStatusFor(kind)` maps an `error` part's kind to the
+status to record it under.
 
 ## Speech
 
@@ -169,7 +225,7 @@ Three things about it are worth knowing before the first invoice:
 A speech model can never be routed a language task, or the other way round: the
 catalog refuses to load when a task class nominates models of two kinds.
 
-`renderSubtitles` turns stored segments into SRT or WebVTT, cutting long cues on
+`renderSubtitles` (from `@bozonx/ai-kit/stt`) turns stored segments into SRT or WebVTT, cutting long cues on
 a real pause when word timings are there and proportionally when they are not.
 `segmentWords` is its other half: providers return one flat word list for a
 whole recording and segments separately, and this puts the two together.
@@ -197,6 +253,9 @@ Two pieces of the surrounding machinery are here too, because both are the same
 in every product that translates and both are quietly wrong when rewritten from
 memory:
 
+Both live in `@bozonx/ai-kit/translate`. `chunkText` (main entry) cuts long
+text between words to fit a request limit.
+
 - **`glossary.ts`** — a binding glossary, applied three times and differently
   each time: only the terms that occur in the text go into the prompt, a
   "do not translate" term is put back by replacement rather than asked for
@@ -215,9 +274,8 @@ a route asks for one. A product that only calls OpenAI installs
 needs no `ws`. A missing package produces a sentence naming what to install
 rather than a module-resolution stack trace.
 
-`@bozonx/ai-kit/stream` is a second entry point holding only the stream-part
-types, so a browser can share the wire vocabulary without resolving the Node
-entry point.
+`@bozonx/ai-kit/stream` holds only the stream-part types, so a browser can
+share the wire vocabulary without resolving the Node entry point.
 
 ## Development
 

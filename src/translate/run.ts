@@ -167,7 +167,7 @@ export async function runTranslate(
   const startedAt = deps.clock.now();
 
   const outcome = await attemptCandidates(deps, candidates, request, {
-    prepare: candidate => deps.registry.provider(candidate.model, candidate.route),
+    prepare: candidate => deps.registry.provider(candidate.model, candidate.route, request.keys),
     run: ({ client, candidate, signal }) =>
       client.translate({
         modelId: candidate.route.model,

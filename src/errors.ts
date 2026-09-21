@@ -99,11 +99,20 @@ export class StreamInterruptedError extends AiError {
   }
 }
 
+/** One candidate that did not answer, and why. */
+export interface CandidateFailure {
+  provider: string;
+  model: string;
+  /** The consumer's own id for the route that failed, when it gave one. */
+  routeId?: string;
+  error: AiError;
+}
+
 /** Every candidate failed. Keeps each failure, because the last one rarely explains. */
 export class AllCandidatesFailedError extends AiError {
-  public readonly failures: ReadonlyArray<{ provider: string; model: string; error: AiError }>;
+  public readonly failures: readonly CandidateFailure[];
 
-  constructor(failures: ReadonlyArray<{ provider: string; model: string; error: AiError }>) {
+  constructor(failures: readonly CandidateFailure[]) {
     super('no_candidates', `All ${failures.length} candidate models failed`);
     this.name = 'AllCandidatesFailedError';
     this.failures = failures;
@@ -128,4 +137,17 @@ export class CatalogError extends Error {
 
 export function isAiError(error: unknown): error is AiError {
   return error instanceof AiError;
+}
+
+/**
+ * How a call that failed this way is recorded.
+ *
+ * One mapping, because every consumer of a stream ends up writing it next to
+ * its usage row, and a content filter written down as an ordinary error is a
+ * spike on the error graph that nobody can do anything about.
+ */
+export function callStatusFor(kind: AiErrorKind): 'error' | 'aborted' | 'filtered' {
+  if (kind === 'aborted') return 'aborted';
+  if (kind === 'content_filter') return 'filtered';
+  return 'error';
 }

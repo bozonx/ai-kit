@@ -10,6 +10,12 @@
  * users, projects or a database — and, since 0.3.0, anything that knows what a
  * product calls its own kinds of work either. If a component needs one of those
  * words, it has been put in the wrong repository.
+ *
+ * This entry point is the kit and everything needed to call it. Speech and
+ * translation extras — provider adapters, subtitles, audio helpers, glossary
+ * and quality checks — live in `@bozonx/ai-kit/stt` and
+ * `@bozonx/ai-kit/translate`; the stream vocabulary alone, for a browser, in
+ * `@bozonx/ai-kit/stream`.
  */
 
 export { Catalog } from './catalog/catalog.js';
@@ -79,14 +85,17 @@ export {
   NoSuitableModelError,
   CatalogError,
   isAiError,
+  callStatusFor,
 } from './errors.js';
-export type { AiErrorKind, AiErrorOptions } from './errors.js';
+export type { AiErrorKind, AiErrorOptions, CandidateFailure } from './errors.js';
 
-export { noopTraceSink, noopUsageSink, systemClock } from './ports.js';
+export { noopAttemptObserver, noopTraceSink, noopUsageSink, systemClock } from './ports.js';
 export type {
   KeyProvider,
   UsageSink,
   TraceSink,
+  AttemptObserver,
+  AttemptFailure,
   Clock,
   RoutedBy,
   CallStatus,
@@ -95,6 +104,8 @@ export type {
   GenerationTrace,
   SpanTrace,
 } from './ports.js';
+
+export type { KeyOverrides } from './providers/client-cache.js';
 
 export type {
   StreamPart,
@@ -122,33 +133,28 @@ export type { ModelMessage } from 'ai';
 export { createAiKit } from './kit.js';
 export type { AiKit, AiKitOptions } from './kit.js';
 
-export { ProviderRegistry } from './providers/registry.js';
-export type { ProviderFactory, ProviderRegistryOptions } from './providers/registry.js';
+export type { ProviderFactory } from './providers/registry.js';
 
 export { selectCandidates, fitsSignals, speaksLanguage } from './policy/policy.js';
 export type { PolicyInput, PolicySignals, ModelCandidate } from './policy/policy.js';
 
-export { DEFAULT_RETRY_POLICY, runGenerate, runStream } from './execute/run.js';
+export { quoteCandidates } from './policy/quote.js';
+export type { QuoteUsage, CandidateQuote } from './policy/quote.js';
+
+export { DEFAULT_RETRY_POLICY } from './execute/run.js';
 export type {
   RetryPolicy,
-  ExecutionDeps,
   GenerateRequest,
   GenerateResult,
   StreamRequest,
   CallAccounting,
 } from './execute/run.js';
 
+/** For authors of provider adapters, so their failures classify like ours. */
 export { classifyError, kindFromStatus } from './execute/classify.js';
 export type { ClassifyContext } from './execute/classify.js';
 
-export { SttProviderRegistry } from './stt/registry.js';
-export type { SttRegistryOptions } from './stt/registry.js';
-
-export { assertSttCapabilities } from './stt/policy.js';
-
-export { runTranscribe, runTranscribeStream } from './stt/run.js';
 export type {
-  SttExecutionDeps,
   SttPolicyInput,
   SttAccounting,
   TranscribeRequest,
@@ -156,29 +162,10 @@ export type {
   StreamTranscribeRequest,
 } from './stt/run.js';
 
-export { assemblyAiSttProvider } from './stt/providers/assemblyai.js';
-export { deepgramSttProvider } from './stt/providers/deepgram.js';
-export { groqSttProvider } from './stt/providers/groq.js';
-
-export { segmentWords } from './stt/segment-words.js';
-export type { SegmentWord } from './stt/segment-words.js';
-
-export { renderSubtitles } from './stt/subtitles.js';
-export type {
-  SubtitleFormat,
-  SubtitleSegment,
-  SubtitleWord,
-  RenderSubtitlesOptions,
-} from './stt/subtitles.js';
-
 export type {
   AudioChunk,
   AudioSource,
-  SttProvider,
   SttProviderFactory,
-  SttStreamEvent,
-  ProviderTranscribeRequest,
-  ProviderStreamRequest,
   TranscriptionOptions,
   TranscriptionResult,
   TranscriptSegment,
@@ -193,14 +180,8 @@ export type {
   TranscriptFinishPart,
 } from './stt/types.js';
 
-export { MtProviderRegistry } from './translate/registry.js';
-export type { MtRegistryOptions } from './translate/registry.js';
-
-export { googleCloudTranslationProvider } from './translate/providers/google-cloud.js';
-
-export { runTranslate, countCharacters } from './translate/run.js';
+export { countCharacters } from './translate/run.js';
 export type {
-  MtExecutionDeps,
   MtPolicyInput,
   MtAccounting,
   TranslateRequest,
@@ -209,37 +190,14 @@ export type {
 
 export type {
   TranslationFormat,
-  TranslationProvider,
   TranslationProviderFactory,
-  TranslationRequest,
   TranslationResult,
-  ProviderTranslateRequest,
 } from './translate/types.js';
-
-export {
-  glossaryEntryOccurs,
-  glossaryRendering,
-  selectGlossaryForText,
-  renderGlossaryForPrompt,
-  restoreKeptTerms,
-  findGlossaryViolations,
-} from './translate/glossary.js';
-export type { GlossaryEntry } from './translate/glossary.js';
-
-export {
-  TRANSLATION_PROBLEM_CODES,
-  TRANSLATION_QUALITY_THRESHOLDS,
-  detectTranslationProblems,
-  renderProblemsForPrompt,
-} from './translate/quality.js';
-export type {
-  TranslationProblem,
-  TranslationProblemCode,
-  TranslationQualityInput,
-} from './translate/quality.js';
 
 export { buildPrompt, wrapUntrusted, escapeUntrusted } from './prompt/untrusted.js';
 export type { BuildPromptInput, BuiltPrompt, UntrustedBlock } from './prompt/untrusted.js';
 
 export { parseModelInput, formatModelRef } from './utils/model-ref.js';
 export type { ModelRef, ParsedModelInput } from './utils/model-ref.js';
+
+export { chunkText } from './utils/chunk-text.js';

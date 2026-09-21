@@ -193,7 +193,7 @@ export async function runTranscribe(
   const startedAt = deps.clock.now();
 
   const outcome = await attemptCandidates(deps, candidates, request, {
-    prepare: candidate => deps.registry.provider(candidate.model, candidate.route),
+    prepare: candidate => deps.registry.provider(candidate.model, candidate.route, request.keys),
     run: async ({ client, candidate, signal }) => {
       // Checked per candidate rather than once: a fallback is a different
       // model, and the option the caller asked for is not automatically one it
@@ -241,7 +241,7 @@ export async function* runTranscribeStream(
   // whoever answered: reconnecting to a second provider mid-sentence would
   // rewrite text somebody is already reading.
   const outcome = await attemptCandidates(deps, candidates, request, {
-    prepare: candidate => deps.registry.provider(candidate.model, candidate.route),
+    prepare: candidate => deps.registry.provider(candidate.model, candidate.route, request.keys),
     run: async ({ client, candidate, signal }) => {
       assertSttCapabilities(candidate.model, options, true);
       if (!client.transcribeStream) {

@@ -20,6 +20,14 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
+    "./stt": {
+      "types": "./dist/stt/index.d.ts",
+      "import": "./dist/stt/index.js"
+    },
+    "./translate": {
+      "types": "./dist/translate/index.d.ts",
+      "import": "./dist/translate/index.js"
+    },
     "./stream": {
       "types": "./dist/stream/stream-parts.d.ts",
       "import": "./dist/stream/stream-parts.js"
@@ -29,6 +37,7 @@
   "files": [
     "dist",
     "models.example.yaml",
+    "README.md",
     "LICENSE"
   ],
   "scripts": {

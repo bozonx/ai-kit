@@ -2,6 +2,7 @@ import type { ResolvedRoute } from '../catalog/catalog.js';
 import type { ModelDefinition } from '../catalog/schema.js';
 import { AiError } from '../errors.js';
 import type { KeyProvider } from '../ports.js';
+import { ClientCache, keyFor, type KeyOverrides } from '../providers/client-cache.js';
 import { assemblyAiSttProvider } from './providers/assemblyai.js';
 import { deepgramSttProvider } from './providers/deepgram.js';
 import { groqSttProvider } from './providers/groq.js';
@@ -30,7 +31,7 @@ export interface SttRegistryOptions {
 export class SttProviderRegistry {
   private readonly keys: KeyProvider;
   private readonly factories: Readonly<Record<string, SttProviderFactory>>;
-  private readonly cache = new Map<string, SttProvider>();
+  private readonly cache = new ClientCache<SttProvider>();
 
   constructor(options: SttRegistryOptions) {
     this.keys = options.keys;
@@ -42,7 +43,11 @@ export class SttProviderRegistry {
   }
 
   /** Resolves a route into a client, cached per provider, key and endpoint. */
-  public async provider(model: ModelDefinition, route: ResolvedRoute): Promise<SttProvider> {
+  public async provider(
+    model: ModelDefinition,
+    route: ResolvedRoute,
+    overrides?: KeyOverrides,
+  ): Promise<SttProvider> {
     const factory = this.factories[route.provider];
     if (!factory) {
       throw new AiError(
@@ -52,28 +57,18 @@ export class SttProviderRegistry {
       );
     }
 
-    let apiKey: string;
-    try {
-      apiKey = await this.keys.get(route.provider);
-    } catch (cause) {
-      throw new AiError('auth', `No API key configured for provider "${route.provider}"`, {
+    const apiKey = await keyFor(this.keys, model, route, overrides);
+    return this.cache.resolve(
+      {
         provider: route.provider,
-        model: model.name,
-        cause,
-      });
-    }
-
-    // Keyed by the credential too: rotating a key must not keep serving the
-    // client built with the old one.
-    const cacheKey = `${route.provider}:${route.baseUrl ?? ''}:${apiKey.slice(-8)}`;
-    const cached = this.cache.get(cacheKey);
-    if (cached) return cached;
-
-    const instance = factory({
-      apiKey,
-      ...(route.baseUrl === undefined ? {} : { baseUrl: route.baseUrl }),
-    });
-    this.cache.set(cacheKey, instance);
-    return instance;
+        apiKey,
+        ...(route.baseUrl === undefined ? {} : { baseUrl: route.baseUrl }),
+      },
+      () =>
+        factory({
+          apiKey,
+          ...(route.baseUrl === undefined ? {} : { baseUrl: route.baseUrl }),
+        }),
+    );
   }
 }

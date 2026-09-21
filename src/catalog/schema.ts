@@ -78,6 +78,13 @@ export const pricingSchema = z.object({
 
 export type ModelPricing = z.infer<typeof pricingSchema>;
 
+/**
+ * What a model can do.
+ *
+ * `tools`, `structuredOutput` and `streaming` decide whether a request may be
+ * sent to it. `promptCaching` and `reasoning` are descriptive: no policy reads
+ * them, and they exist for the consumer's own model picker and prompt layout.
+ */
 export const capabilitiesSchema = z.object({
   tools: z.boolean().default(false),
   structuredOutput: z.boolean().default(false),
@@ -236,6 +243,10 @@ export const modelSchema = z
     /** Language models only; meaningless for a model billed by the second. */
     contextSize: z.number().int().positive().optional(),
     maxOutputTokens: z.number().int().positive().optional(),
+    /**
+     * `input` decides whether a request with images may be sent here;
+     * `output` is descriptive, for the consumer.
+     */
     modalities: z
       .object({
         input: z.array(modalitySchema).default(['text']),
@@ -257,10 +268,14 @@ export const modelSchema = z
      * of failure, because it does not look like one.
      */
     languages: z.array(z.string()).default([]),
-    /** Relative weight for weighted random choice within a pool. */
+    /**
+     * The consumer's own ranking hint. Never read by the library: candidates
+     * are tried in the order `taskClasses` lists them, not drawn at random.
+     */
     weight: z.number().int().positive().default(1),
     /** Set to false to take a model out of rotation without deleting its prices. */
     available: z.boolean().default(true),
+    /** The consumer's own labels. Never read by the library. */
     tags: z.array(z.string()).default([]),
   })
   .superRefine((model, ctx) => {

@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [0.3.0] - 2026-09-20
 
 The release that makes the package usable by a second product. Three of the
-four changes are breaking, and all three were the same defect: things that
+four headline changes are breaking, and all three were the same defect: things that
 belong to a consumer had been written into the library.
 
 ### Changed — breaking
@@ -41,6 +41,17 @@ belong to a consumer had been written into the library.
   model are priced by the same arithmetic.
 - `ProviderFactory` may return a promise and receives `baseUrl`, which the
   language-model registry previously accepted in the schema and ignored.
+- **The main entry point is the kit, and the loops under it are no longer
+  public.** `runGenerate`, `runStream`, `runTranscribe`, `runTranscribeStream`,
+  `runTranslate`, `ExecutionDeps`, `SttExecutionDeps`, `MtExecutionDeps`,
+  `ProviderRegistry`, `SttProviderRegistry` and `MtProviderRegistry` are gone
+  from the exports. The only consumer that assembled them by hand did so to
+  pass a customer's key per call, which `keys` on the request now does.
+  Speech and translation extras moved to their own entry points:
+  `@bozonx/ai-kit/stt` (adapters, `renderSubtitles`, `segmentWords`,
+  `assertSttCapabilities`, the adapter interfaces) and
+  `@bozonx/ai-kit/translate` (`googleCloudTranslationProvider`, glossary,
+  quality detectors, the adapter interfaces).
 
 ### Added
 
@@ -64,12 +75,43 @@ belong to a consumer had been written into the library.
   pause where word timings allow) and `segmentWords`, which pairs a provider's
   flat word list with its segments.
 - `anthropic` as a fourth built-in language-model adapter.
+- **`keys` on every request**: credentials for that call only, applied over
+  the `KeyProvider` — how a customer's own key is used without a kit per
+  customer.
+- **`AttemptObserver`** (`attempts` in `AiKitOptions`) hears about every
+  candidate that failed, with its `routeId`, including the ones a fallback
+  covered for. `AllCandidatesFailedError.failures` and the `attempt-failed`
+  trace span carry `routeId` too. Before this a consumer's route health could
+  only see the route that answered, so a route failing before the first token
+  was never counted against.
+- **`quoteCandidates`**: every candidate the policy would try, with its
+  worst-case cost in tokens, seconds or characters — the upper bound a hold
+  before the call has to cover.
+- **`Catalog#toData()`**, the validated data back as valid input.
+- **`callStatusFor(kind)`**: the usage status an error kind is recorded under.
+- **`chunkText`**: long text cut between words to fit a request limit.
+- **Audio helpers** in `@bozonx/ai-kit/stt`: `estimateAudioSeconds`,
+  `pcm16Rms`, `SilenceDetector`, `pcm16ToWav`.
 - `kindFromStatus` is exported and shared with the speech adapters, which had
   their own copy — one of them knew that 404 and 422 mean a bad request and the
   other did not.
 
+### Fixed
+
+- **A stream the consumer stopped reading is cancelled and recorded.**
+  `runStream` had no `finally`: breaking out of the loop left the provider
+  generating until the time budget ran out, and the `UsageSink` and
+  `TraceSink` never heard about the call. It is now aborted, and recorded as
+  `aborted` with what it had produced.
+- **Provider clients are cached by a hash of the whole key**, not its last
+  eight characters, in a bounded least-recently-used cache. With per-call keys
+  two customers whose keys shared a suffix would have been served one client
+  built with one of their keys, and every key was an entry that never left.
+
 ### Packaging
 
+- `README.md` moved to the package root, so it ships with the package; it
+  used to live in `docs/` and the npm page had none.
 - The provider SDKs and `ws` are **optional peer dependencies**, loaded on
   first use. A missing one produces a sentence naming what to install. A
   product that calls only OpenAI no longer installs Google's SDK.

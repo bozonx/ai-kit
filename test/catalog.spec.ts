@@ -23,6 +23,21 @@ taskClasses:
 `;
 
 describe('Catalog', () => {
+  it('round-trips through toData', () => {
+    const catalog = Catalog.fromYaml(minimal);
+    const again = Catalog.fromObject(catalog.toData());
+
+    expect(again.models).toEqual(catalog.models);
+    expect(again.taskClasses).toEqual(catalog.taskClasses);
+  });
+
+  it('hands out a copy from toData', () => {
+    const catalog = Catalog.fromYaml(minimal);
+    catalog.toData().models.length = 0;
+
+    expect(catalog.models.length).toBeGreaterThan(0);
+  });
+
   it('applies the documented defaults to a minimal entry', () => {
     const model = Catalog.fromYaml(minimal).require('fast');
 

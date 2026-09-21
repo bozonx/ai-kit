@@ -4,7 +4,8 @@ import { MockLanguageModelV4 } from 'ai/test';
 
 import { Catalog } from '../src/catalog/catalog.js';
 import { createAiKit } from '../src/kit.js';
-import type { UsageEvent } from '../src/ports.js';
+import { AllCandidatesFailedError } from '../src/errors.js';
+import type { AttemptFailure, UsageEvent } from '../src/ports.js';
 import type { StreamPart } from '../src/stream/stream-parts.js';
 
 /**
@@ -457,5 +458,143 @@ taskClasses:
     }
 
     expect(parts[0]).toMatchObject({ type: 'model', model: 'writer', routeId: 'writer-direct' });
+  });
+});
+
+describe('a consumer that stops reading', () => {
+  it('cancels the provider request and still records the call', async () => {
+    const recorded: UsageEvent[] = [];
+    let providerSignal: AbortSignal | undefined;
+    const factory = ({ modelId }: { apiKey: string; modelId: string }) =>
+      new MockLanguageModelV4({
+        provider: 'fake',
+        modelId,
+        doStream: options => {
+          providerSignal = options.abortSignal;
+          // Never closes on its own: only a cancellation ends it.
+          return Promise.resolve({
+            stream: new ReadableStream({
+              start(controller) {
+                controller.enqueue({ type: 'text-start', id: '1' });
+                controller.enqueue({ type: 'text-delta', id: '1', delta: 'first words' });
+              },
+            }),
+          }) as never;
+        },
+      });
+    const kit = createAiKit({
+      catalog,
+      keys,
+      retry,
+      providers: { fake: factory },
+      usage: { record: event => Promise.resolve(void recorded.push(event)) },
+    });
+
+    for await (const part of kit.stream({ policy, messages })) {
+      if (part.type === 'text-delta') break;
+    }
+
+    expect(providerSignal?.aborted).toBe(true);
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0]?.status).toBe('aborted');
+    expect(recorded[0]?.usage.outputTokens).toBeGreaterThan(0);
+  });
+});
+
+describe('credentials for one call', () => {
+  it('uses the key the call brought for its provider, and the kit key otherwise', async () => {
+    const seen: string[] = [];
+    const { factory } = fakeProvider({ doGenerate: () => textResult('ok') });
+    const kit = createAiKit({
+      catalog,
+      keys,
+      retry,
+      providers: {
+        fake: params => {
+          seen.push(params.apiKey);
+          return factory(params);
+        },
+      },
+    });
+
+    await kit.generate({ policy, messages, keys: { fake: 'customer-key' } });
+    await kit.generate({ policy, messages });
+
+    expect(seen).toEqual(['customer-key', 'test-key']);
+  });
+});
+
+describe('failed attempts', () => {
+  const routed = Catalog.fromYaml(`
+models:
+  - name: writer
+    provider: fake
+    model: writer-aggregated
+    routeId: writer-aggregated
+    tier: standard
+    contextSize: 100000
+    maxOutputTokens: 4096
+    pricing: { version: 'a', inputPerMTok: 1, outputPerMTok: 1 }
+    routes:
+      - id: writer-direct
+        provider: other
+        model: writer-direct
+        pricing: { version: 'd', inputPerMTok: 1, outputPerMTok: 1 }
+taskClasses:
+  chat_simple: [writer]
+`);
+
+  it('names the route that failed even when a fallback answered', async () => {
+    const failures: AttemptFailure[] = [];
+    const { factory } = fakeProvider({
+      doGenerate: modelId => {
+        if (modelId === 'writer-aggregated') throw apiError(503);
+        return textResult('ok');
+      },
+    });
+    const kit = createAiKit({
+      catalog: routed,
+      keys,
+      retry: { ...retry, maxRetriesPerCandidate: 0 },
+      providers: { fake: factory, other: factory },
+      attempts: { failed: failure => void failures.push(failure) },
+    });
+
+    const result = await kit.generate({ policy, messages, name: 'feature', traceId: 't1' });
+
+    expect(result.routeId).toBe('writer-direct');
+    expect(failures).toEqual([
+      {
+        traceId: 't1',
+        name: 'feature',
+        provider: 'fake',
+        model: 'writer',
+        routeId: 'writer-aggregated',
+        kind: 'provider_unavailable',
+        message: expect.any(String),
+      },
+    ]);
+  });
+
+  it('keeps the route of every failure when nothing answered', async () => {
+    const { factory } = fakeProvider({
+      doGenerate: () => {
+        throw apiError(503);
+      },
+    });
+    const kit = createAiKit({
+      catalog: routed,
+      keys,
+      retry: { ...retry, maxRetriesPerCandidate: 0 },
+      providers: { fake: factory, other: factory },
+    });
+
+    const error = await kit.generate({ policy, messages }).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(AllCandidatesFailedError);
+    expect((error as AllCandidatesFailedError).failures.map(failure => failure.routeId)).toEqual([
+      'writer-aggregated',
+      'writer-direct',
+    ]);
   });
 });

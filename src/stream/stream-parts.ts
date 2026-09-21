@@ -60,7 +60,10 @@ export interface SourcesPart {
   sources: Array<{ title?: string; url: string; snippet?: string }>;
 }
 
-/** Final accounting. Arrives once, at the end of a successful stream. */
+/**
+ * Final accounting. Arrives once, after the last piece of the answer and before
+ * `finish` or `error` — a stream that failed half way was still paid for.
+ */
 export interface UsagePart {
   type: 'usage';
   usage: TokenUsage;

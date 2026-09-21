@@ -6,9 +6,11 @@
 ### Structure and Practices
 
 - Node.js: version 22, package manager `pnpm`
-- Library source: `src/`, one public entry point: `src/index.ts`
+- Library source: `src/`. Public entry points: `src/index.ts` (the kit), `src/stt/index.ts`,
+  `src/translate/index.ts`, `src/stream/stream-parts.ts` — mirrored in `exports` of `package.json`
 - Tests: `test/`, run with `pnpm test`
-- Guides: `docs/`, work-in-progress plans: `dev_docs/`
+- `README.md` at the root (it ships with the package), other guides in `docs/`,
+  work-in-progress plans in `dev_docs/`
 - Update `docs/CHANGELOG.md` for significant changes
 - JSDoc, comments, messages and strings in English
 - `models.example.yaml` is an example of the catalog format, not a default. The

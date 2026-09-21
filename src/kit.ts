@@ -10,9 +10,11 @@ import {
   type StreamRequest,
 } from './execute/run.js';
 import {
+  noopAttemptObserver,
   noopTraceSink,
   noopUsageSink,
   systemClock,
+  type AttemptObserver,
   type Clock,
   type KeyProvider,
   type TraceSink,
@@ -53,6 +55,8 @@ export interface AiKitOptions {
   keys: KeyProvider;
   usage?: UsageSink;
   trace?: TraceSink;
+  /** Told about every candidate that failed, including ones a fallback covered. */
+  attempts?: AttemptObserver;
   clock?: Clock;
   retry?: Partial<RetryPolicy>;
   /** Adapters for providers the package does not ship, or replacements. */
@@ -63,6 +67,11 @@ export interface AiKitOptions {
   mtProviders?: Record<string, TranslationProviderFactory>;
 }
 
+/**
+ * Every method accepts `keys` on the request: credentials for that call only,
+ * applied over the kit's `KeyProvider`. That is how a customer's own key is
+ * used without building a kit per customer.
+ */
 export interface AiKit {
   readonly catalog: Catalog;
   /** One answer; pass a schema for structured output. */
@@ -81,6 +90,7 @@ export function createAiKit(options: AiKitOptions): AiKit {
   const usage = options.usage ?? noopUsageSink;
   const trace = options.trace ?? noopTraceSink;
   const clock = options.clock ?? systemClock;
+  const attempts = options.attempts ?? noopAttemptObserver;
   const retry = { ...DEFAULT_RETRY_POLICY, ...options.retry };
 
   const deps: ExecutionDeps = {
@@ -88,6 +98,7 @@ export function createAiKit(options: AiKitOptions): AiKit {
     registry: new ProviderRegistry({ keys: options.keys, factories: options.providers }),
     usage,
     trace,
+    attempts,
     clock,
     retry,
   };
@@ -97,6 +108,7 @@ export function createAiKit(options: AiKitOptions): AiKit {
     registry: new SttProviderRegistry({ keys: options.keys, factories: options.sttProviders }),
     usage,
     trace,
+    attempts,
     clock,
     retry,
   };
@@ -106,6 +118,7 @@ export function createAiKit(options: AiKitOptions): AiKit {
     registry: new MtProviderRegistry({ keys: options.keys, factories: options.mtProviders }),
     usage,
     trace,
+    attempts,
     clock,
     retry,
   };

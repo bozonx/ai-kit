@@ -151,6 +151,19 @@ export class Catalog {
     return this.kindByTaskClass.get(taskClass);
   }
 
+  /**
+   * The catalog as data, defaults filled in, unavailable models and routes
+   * included.
+   *
+   * Valid input for `fromObject`, which is the point: a consumer that merges a
+   * file catalog with its own records, or stores one, round-trips through this
+   * instead of rebuilding the shape from lookups. A copy, so editing it cannot
+   * change a catalog that is already validated.
+   */
+  public toData(): CatalogData {
+    return structuredClone(this.data);
+  }
+
   /** Task classes the catalog has an opinion about. */
   public get taskClasses(): readonly TaskClass[] {
     return Object.keys(this.data.taskClasses);

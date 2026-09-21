@@ -1,14 +1,15 @@
+import type { AiErrorKind } from './errors.js';
+
 /**
  * Everything the library needs from the outside world.
  *
  * The package implements none of it, because every one of these is a decision
  * the host application has already made: where secrets come from, where usage
- * is written, what observability looks like, and which process owns shared
- * state. A library that decides those for its host is a framework, and gets
+ * is written, and what observability looks like. A library that decides those for its host is a framework, and gets
  * worked around instead of used.
  *
- * All of them are optional at the call site — a no-op or in-memory default
- * stands in — with one exception: keys, because there is no sensible default
+ * All of them are optional at the call site — a no-op default stands in —
+ * with one exception: keys, because there is no sensible default
  * for a credential.
  */
 
@@ -35,6 +36,31 @@ export interface UsageSink {
 export interface TraceSink {
   generation(trace: GenerationTrace): void;
   span(trace: SpanTrace): void;
+}
+
+/**
+ * Told about every candidate that failed, including the ones a fallback then
+ * covered for.
+ *
+ * The result of a call names only the route that answered, and a failure
+ * nobody can attribute is a failure nobody's health automation can act on —
+ * which is most of them, because a route that fails before the first token is
+ * exactly the one the next candidate quietly replaces.
+ */
+export interface AttemptObserver {
+  failed(failure: AttemptFailure): void;
+}
+
+export interface AttemptFailure {
+  traceId?: string;
+  /** The call's `name`, e.g. the consumer's feature. */
+  name: string;
+  provider: string;
+  model: string;
+  /** The consumer's own id for the route that failed, when it gave one. */
+  routeId?: string;
+  kind: AiErrorKind;
+  message: string;
 }
 
 /** Injectable time, so that retry and cooldown logic is testable. */
@@ -116,6 +142,11 @@ export interface SpanTrace {
   endedAt: number;
   metadata?: Record<string, unknown>;
 }
+
+/** Ignores every failure. The default. */
+export const noopAttemptObserver: AttemptObserver = {
+  failed: () => undefined,
+};
 
 /** Discards everything. The default, so observability stays optional. */
 export const noopTraceSink: TraceSink = {

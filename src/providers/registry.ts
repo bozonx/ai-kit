@@ -4,6 +4,7 @@ import type { ResolvedRoute } from '../catalog/catalog.js';
 import type { ModelDefinition } from '../catalog/schema.js';
 import { AiError } from '../errors.js';
 import type { KeyProvider } from '../ports.js';
+import { ClientCache, keyFor, type KeyOverrides } from './client-cache.js';
 
 /**
  * Which SDK adapter runs a model.
@@ -83,7 +84,7 @@ export interface ProviderRegistryOptions {
 /**
  * Resolves a route into something the AI SDK can call.
  *
- * Instances are cached per provider, endpoint and key, because every provider
+ * Instances are cached per provider, endpoint, model and key, because every provider
  * object carries an HTTP client and building one per request throws away
  * connection reuse — measurable on a chat where the model is called once per
  * keystroke burst.
@@ -91,7 +92,7 @@ export interface ProviderRegistryOptions {
 export class ProviderRegistry {
   private readonly keys: KeyProvider;
   private readonly factories: Readonly<Record<string, ProviderFactory>>;
-  private readonly cache = new Map<string, LanguageModel>();
+  private readonly cache = new ClientCache<LanguageModel>();
 
   constructor(options: ProviderRegistryOptions) {
     this.keys = options.keys;
@@ -107,10 +108,16 @@ export class ProviderRegistry {
   }
 
   /**
+   * @param overrides Credentials this one call brought, applied over `keys`.
    * @throws AiError('invalid_request') when no adapter is registered for the
-   *   provider, and AiError('auth') when the deployment has no key for it.
+   *   provider, and AiError('auth') when neither the call nor the deployment
+   *   has a key for it.
    */
-  public async languageModel(model: ModelDefinition, route: ResolvedRoute): Promise<LanguageModel> {
+  public async languageModel(
+    model: ModelDefinition,
+    route: ResolvedRoute,
+    overrides?: KeyOverrides,
+  ): Promise<LanguageModel> {
     const factory = this.factories[route.provider];
     if (!factory) {
       throw new AiError(
@@ -120,29 +127,20 @@ export class ProviderRegistry {
       );
     }
 
-    let apiKey: string;
-    try {
-      apiKey = await this.keys.get(route.provider);
-    } catch (cause) {
-      throw new AiError('auth', `No API key configured for provider "${route.provider}"`, {
+    const apiKey = await keyFor(this.keys, model, route, overrides);
+    return this.cache.resolve(
+      {
         provider: route.provider,
-        model: model.name,
-        cause,
-      });
-    }
-
-    // Keyed by the credential too: rotating a key must not keep serving the
-    // client built with the old one.
-    const cacheKey = `${route.provider}:${route.model}:${route.baseUrl ?? ''}:${apiKey.slice(-8)}`;
-    const cached = this.cache.get(cacheKey);
-    if (cached) return cached;
-
-    const instance = await factory({
-      apiKey,
-      modelId: route.model,
-      ...(route.baseUrl === undefined ? {} : { baseUrl: route.baseUrl }),
-    });
-    this.cache.set(cacheKey, instance);
-    return instance;
+        model: route.model,
+        apiKey,
+        ...(route.baseUrl === undefined ? {} : { baseUrl: route.baseUrl }),
+      },
+      () =>
+        factory({
+          apiKey,
+          modelId: route.model,
+          ...(route.baseUrl === undefined ? {} : { baseUrl: route.baseUrl }),
+        }),
+    );
   }
 }
