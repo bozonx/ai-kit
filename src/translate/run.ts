@@ -37,6 +37,8 @@ export interface MtPolicyInput {
   mode: 'auto' | 'manual';
   taskClass: TaskClass;
   requestedModel?: string | string[];
+  /** Routes the caller does not want tried first, by their own route id. */
+  demotedRoutes?: ReadonlySet<string>;
 }
 
 export interface TranslateRequest extends AttemptRequest {
@@ -155,6 +157,9 @@ export async function runTranslate(
       ...(request.policy.requestedModel === undefined
         ? {}
         : { requestedModel: request.policy.requestedModel }),
+      ...(request.policy.demotedRoutes === undefined
+        ? {}
+        : { demotedRoutes: request.policy.demotedRoutes }),
       signals: {
         estimatedInputTokens: 0,
         ...(request.sourceLanguage === undefined ? {} : { language: request.sourceLanguage }),

@@ -44,9 +44,11 @@ export interface SttExecutionDeps extends AttemptDeps {
 export interface SttPolicyInput {
   /** `manual` honours `requestedModel`; `auto` follows the catalog's order. */
   mode: 'auto' | 'manual';
-  /** One of `dictation`, `transcription`, `subtitles`. */
+  /** A task class the catalog serves with speech models. */
   taskClass: TaskClass;
   requestedModel?: string | string[];
+  /** Routes the caller does not want tried first, by their own route id. */
+  demotedRoutes?: ReadonlySet<string>;
 }
 
 interface CommonSttRequest extends AttemptRequest {
@@ -101,6 +103,7 @@ function pickCandidates(
       mode: policy.mode,
       taskClass: policy.taskClass,
       requestedModel: policy.requestedModel,
+      ...(policy.demotedRoutes === undefined ? {} : { demotedRoutes: policy.demotedRoutes }),
       signals: {
         estimatedInputTokens: 0,
         language: options.language,

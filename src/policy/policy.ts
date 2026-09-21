@@ -117,6 +117,12 @@ export function fitsSignals(
     return true;
   }
 
+  if (model.kind === 'embedding') {
+    // Here the estimate is the largest single input, not the sum: each value
+    // is embedded on its own, and it is the longest that overflows.
+    return signals.estimatedInputTokens <= (model.contextSize ?? 0);
+  }
+
   if (model.kind === 'mt') {
     if (signals.needsHtml && !model.mtCapabilities?.html) return false;
     if (!signals.language && !(model.mtCapabilities?.languageDetection ?? true)) return false;

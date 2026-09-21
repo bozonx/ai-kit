@@ -1,10 +1,19 @@
-import { generateObject, generateText, streamText, type ModelMessage } from 'ai';
+import {
+  generateText,
+  isStepCount,
+  Output,
+  streamText,
+  type ModelMessage,
+  type ToolChoice,
+  type ToolSet,
+} from 'ai';
 import type { z } from 'zod';
 
 import type { Catalog } from '../catalog/catalog.js';
 import { calculateCost, estimateTokens } from '../catalog/pricing.js';
 import { AiError, StreamInterruptedError, callStatusFor } from '../errors.js';
 import { selectCandidates, type ModelCandidate, type PolicyInput } from '../policy/policy.js';
+import { signalsFor } from '../policy/signals.js';
 import type { CallStatus, RoutedBy, TokenUsage, UsageSink } from '../ports.js';
 import type { ProviderRegistry } from '../providers/registry.js';
 import type { StreamPart } from '../stream/stream-parts.js';
@@ -30,6 +39,15 @@ export interface ExecutionDeps extends AttemptDeps {
   usage: UsageSink;
 }
 
+/**
+ * Settings for one provider, by provider id, passed through untouched.
+ *
+ * The escape hatch for what only one provider has — a thinking budget, a cache
+ * breakpoint, an upstream routing preference. Keyed by provider so that a
+ * fallback to another provider simply ignores what was not meant for it.
+ */
+export type ProviderOptions = NonNullable<Parameters<typeof generateText>[0]['providerOptions']>;
+
 interface CommonRequest extends AttemptRequest {
   policy: PolicyInput;
   /** Instructions. Untrusted material belongs in `messages`, wrapped. */
@@ -37,6 +55,18 @@ interface CommonRequest extends AttemptRequest {
   messages: ModelMessage[];
   temperature?: number;
   maxOutputTokens?: number;
+  providerOptions?: ProviderOptions;
+  /**
+   * Tools the model may call. Their presence makes `needsTools` true, so only
+   * candidates that can call tools are tried.
+   */
+  tools?: ToolSet;
+  toolChoice?: ToolChoice<ToolSet>;
+  /**
+   * How many model steps a call may take: each tool round trip is one more.
+   * Defaults to 1, which returns the tool calls without a follow-up answer.
+   */
+  maxSteps?: number;
 }
 
 export interface GenerateRequest<T = never> extends CommonRequest {
@@ -60,11 +90,29 @@ export interface CallAccounting {
   latencyMs: number;
 }
 
+/** One tool the model called during the call, with what it got back. */
+export interface ToolActivity {
+  toolCallId: string;
+  toolName: string;
+  args: unknown;
+  /** Absent when the tool has no `execute` and the caller runs it. */
+  result?: unknown;
+}
+
 export interface GenerateResult<T = never> extends CallAccounting {
   text: string;
   /** Set only when the request carried a schema. */
   object: T | undefined;
   finishReason: string;
+  /** Every tool call across every step, in order. Empty without tools. */
+  toolCalls: ToolActivity[];
+  /**
+   * The assistant and tool messages this call produced, ready to be appended
+   * to `messages` for the next turn.
+   */
+  responseMessages: ModelMessage[];
+  /** Model steps taken; more than one only with tools and `maxSteps`. */
+  steps: number;
 }
 
 export type StreamRequest = CommonRequest;
@@ -91,6 +139,48 @@ const EMPTY_USAGE: TokenUsage = {
   cachedInputTokens: 0,
   reasoningTokens: 0,
 };
+
+function hasTools(request: CommonRequest): boolean | undefined {
+  return request.tools && Object.keys(request.tools).length > 0 ? true : undefined;
+}
+
+/** The request fields the SDK takes as they are, present only when set. */
+function sdkExtras(request: CommonRequest) {
+  return {
+    ...(request.providerOptions === undefined ? {} : { providerOptions: request.providerOptions }),
+    ...(request.tools === undefined ? {} : { tools: request.tools }),
+    ...(request.toolChoice === undefined ? {} : { toolChoice: request.toolChoice }),
+    ...(request.maxSteps === undefined ? {} : { stopWhen: isStepCount(request.maxSteps) }),
+  };
+}
+
+interface StepLike {
+  toolCalls: ReadonlyArray<{ toolCallId: string; toolName: string; input: unknown }>;
+  toolResults: ReadonlyArray<{ toolCallId: string; output: unknown }>;
+}
+
+function toolActivity(steps: readonly StepLike[]): ToolActivity[] {
+  return steps.flatMap(step =>
+    step.toolCalls.map(call => {
+      const result = step.toolResults.find(item => item.toolCallId === call.toolCallId);
+      return {
+        toolCallId: call.toolCallId,
+        toolName: call.toolName,
+        args: call.input,
+        ...(result === undefined ? {} : { result: result.output }),
+      };
+    }),
+  );
+}
+
+function addUsage(left: TokenUsage, right: TokenUsage): TokenUsage {
+  return {
+    inputTokens: left.inputTokens + right.inputTokens,
+    outputTokens: left.outputTokens + right.outputTokens,
+    cachedInputTokens: left.cachedInputTokens + right.cachedInputTokens,
+    reasoningTokens: left.reasoningTokens + right.reasoningTokens,
+  };
+}
 
 /** The SDK's usage shape, flattened to the four numbers that get billed. */
 function normalizeUsage(raw: unknown): TokenUsage {
@@ -186,6 +276,7 @@ export async function runGenerate<T = never>(
         ...request.policy.signals,
         needsStructuredOutput:
           request.policy.signals.needsStructuredOutput ?? Boolean(request.schema),
+        needsTools: request.policy.signals.needsTools ?? hasTools(request),
         maxOutputTokens: request.policy.signals.maxOutputTokens ?? request.maxOutputTokens,
       },
     },
@@ -209,29 +300,31 @@ export async function runGenerate<T = never>(
         // stops meaning anything and `attempts` stops matching reality. The
         // rules of 7.4 live here, so the one underneath is turned off.
         maxRetries: 0,
+        ...sdkExtras(request),
       };
 
-      if (request.schema) {
-        const result = await generateObject({
-          ...common,
-          schema: request.schema,
-          schemaName: request.schemaName,
-          schemaDescription: request.schemaDescription,
-        });
-        return {
-          text: JSON.stringify(result.object),
-          object: result.object as T,
-          finishReason: String(result.finishReason),
-          usage: normalizeUsage(result.usage),
-        };
-      }
+      const result = request.schema
+        ? await generateText({
+            ...common,
+            output: Output.object({
+              schema: request.schema,
+              ...(request.schemaName === undefined ? {} : { name: request.schemaName }),
+              ...(request.schemaDescription === undefined
+                ? {}
+                : { description: request.schemaDescription }),
+            }),
+          })
+        : await generateText(common);
 
-      const result = await generateText(common);
+      const object = request.schema ? (result.output as T) : undefined;
       return {
-        text: result.text,
-        object: undefined,
+        text: request.schema ? JSON.stringify(object) : result.text,
+        object,
         finishReason: String(result.finishReason),
-        usage: normalizeUsage(result.totalUsage),
+        usage: normalizeUsage(result.usage),
+        toolCalls: toolActivity(result.steps),
+        responseMessages: result.responseMessages as ModelMessage[],
+        steps: result.steps.length,
       };
     },
   });
@@ -249,6 +342,9 @@ export async function runGenerate<T = never>(
     text: outcome.value.text,
     object: outcome.value.object,
     finishReason: outcome.value.finishReason,
+    toolCalls: outcome.value.toolCalls,
+    responseMessages: outcome.value.responseMessages,
+    steps: outcome.value.steps,
   };
 }
 
@@ -275,6 +371,7 @@ export async function* runStream(
       signals: {
         ...request.policy.signals,
         needsStreaming: true,
+        needsTools: request.policy.signals.needsTools ?? hasTools(request),
         maxOutputTokens: request.policy.signals.maxOutputTokens ?? request.maxOutputTokens,
       },
     },
@@ -312,6 +409,7 @@ export async function* runStream(
           maxOutputTokens: request.maxOutputTokens,
           abortSignal: signal,
           maxRetries: 0,
+          ...sdkExtras(request),
           // The SDK's default handler writes to the console, and this package
           // does not log. Failures leave through the stream, where they belong.
           onError: () => undefined,
@@ -364,10 +462,9 @@ export async function* runStream(
     // zero after visible output would make "generate and cancel" free, so use
     // a conservative text estimate when no provider accounting arrived.
     if (emitted && usage.outputTokens === 0) {
-      const input = [request.system ?? '', JSON.stringify(request.messages)].join('\n');
       usage = {
         ...usage,
-        inputTokens: usage.inputTokens || estimateTokens(input),
+        inputTokens: usage.inputTokens || signalsFor(request).estimatedInputTokens,
         outputTokens: estimateTokens(text),
       };
     }
@@ -440,9 +537,10 @@ export async function* runStream(
             };
             break;
           case 'finish-step':
-            // Kept because a stream that fails mid-answer never reaches the
-            // final `finish`, and the tokens it burned are still owed.
-            usage = normalizeUsage(part.usage);
+            // Summed because a stream that fails mid-answer never reaches the
+            // final `finish`, and the tokens every finished step burned are
+            // still owed — with tools there is more than one of them.
+            usage = addUsage(usage, normalizeUsage(part.usage));
             if (part.finishReason) finishReason = String(part.finishReason);
             break;
           case 'finish':

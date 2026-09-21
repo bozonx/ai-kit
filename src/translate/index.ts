@@ -26,6 +26,9 @@ export {
 } from './glossary.js';
 export type { GlossaryEntry } from './glossary.js';
 
+export { splitParallelText } from './parallel.js';
+export type { ParallelPair } from './parallel.js';
+
 export {
   TRANSLATION_PROBLEM_CODES,
   TRANSLATION_QUALITY_THRESHOLDS,

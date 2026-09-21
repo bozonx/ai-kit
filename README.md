@@ -32,9 +32,9 @@ visible without publishing.
 
 | Import | What is in it |
 |---|---|
-| `@bozonx/ai-kit` | `createAiKit` and everything needed to call it: the catalog, pricing, policy, errors, ports, prompt assembly, request and result types |
+| `@bozonx/ai-kit` | `createAiKit` and everything needed to call it: the catalog, pricing, policy, errors, ports, prompt assembly, tools, chat history compaction, request and result types |
 | `@bozonx/ai-kit/stt` | Speech extras: provider adapters, subtitles, word segmentation, audio helpers (`estimateAudioSeconds`, `SilenceDetector`, `pcm16ToWav`) |
-| `@bozonx/ai-kit/translate` | Translation extras: the Cloud Translation adapter, the binding glossary, the quality detectors |
+| `@bozonx/ai-kit/translate` | Translation extras: the Cloud Translation adapter, parallel text splitting, the binding glossary, the quality detectors |
 | `@bozonx/ai-kit/stream` | The stream-part types alone, for a browser |
 
 The kit is the way to call a model. The loops underneath it — retry, fallback,
@@ -141,6 +141,11 @@ Everything the library needs from the outside arrives through `src/ports.ts`:
 optional except keys — a library that cannot be called until five interfaces
 are implemented gets worked around instead of used.
 
+`UsageSink` is optional in practice too. Every result — and the `usage` part of
+a stream — carries the full accounting, so a consumer that has to attach a
+tenant to each row can record from the result and leave the sink empty.
+`isProviderFault(kind)` says which failures a route's health should count.
+
 `AttemptObserver` hears about every candidate that failed, by `routeId`,
 including the ones a fallback then covered for. The result of a call only
 names the route that answered, so this is what a consumer's route health
@@ -190,6 +195,65 @@ consumer may stop reading at any point: the provider request is then cancelled
 and the call is still recorded through the `UsageSink`, as `aborted`, with
 whatever it produced. `callStatusFor(kind)` maps an `error` part's kind to the
 status to record it under.
+
+## Tools and provider options
+
+`generate` and `stream` take `tools` (defined with the re-exported `tool`),
+`toolChoice` and `maxSteps`. Tools make `needsTools` true, so only candidates
+whose route can call tools are tried. With `maxSteps` above 1 the SDK runs the
+loop — tool call, tool result, next step — and every step is paid for:
+
+```ts
+import { tool } from '@bozonx/ai-kit';
+
+const result = await kit.generate({
+  policy: { mode: 'auto', taskClass: 'chat_agentic', signals: { estimatedInputTokens: 800 } },
+  messages,
+  maxSteps: 4,
+  tools: {
+    search: tool({
+      description: 'Search the web',
+      inputSchema: z.object({ query: z.string() }),
+      execute: ({ query }) => search(query),
+    }),
+  },
+});
+// result.toolCalls, result.steps, result.responseMessages (append for the next turn)
+```
+
+Nothing is retried after the first visible part, and a tool call is visible:
+a tool with side effects never runs twice because of a retry.
+
+`providerOptions` passes settings for one provider through untouched — a
+thinking budget, a cache breakpoint — keyed by provider id, so a fallback to
+another provider ignores what was not meant for it.
+
+`signalsFor({ system, messages })` derives `estimatedInputTokens` and
+`hasImages` from the request itself, multi-part messages included.
+
+## Embeddings
+
+The fourth kind of model. `kit.embed` returns one vector per value and bills
+the input tokens the provider counted:
+
+```ts
+const result = await kit.embed({
+  policy: { mode: 'manual', taskClass: 'search_index', requestedModel: 'gemini-embedding-001' },
+  values: chunks,
+});
+// result.embeddings, result.dimensions, result.tokens, result.costMicros
+```
+
+Pin the model when the vectors go into an existing index: vectors of two
+different models are not comparable, and only another route of the same model
+is a safe fallback.
+
+## Chat history
+
+`compactHistory` keeps the newest messages that fit a token budget and a
+message count, counts a rolling summary against the same budget, and reports
+which dropped messages the summary does not cover yet (`unsummarized`,
+`summaryStale`) — so the caller knows when a rebuild is worth a model call.
 
 ## Speech
 
@@ -249,13 +313,19 @@ Unlike a language model, the price is exact before the call: the characters are
 counted from the text in hand, so a quote shown to a customer and the amount
 finally charged can be the same number.
 
-Two pieces of the surrounding machinery are here too, because both are the same
-in every product that translates and both are quietly wrong when rewritten from
-memory:
+The built-in Cloud Translation adapter is registered as `google-translate`,
+not `google`: that id is Gemini's, and a `KeyProvider` is asked for a key by
+provider id — the two products take different credentials.
 
-Both live in `@bozonx/ai-kit/translate`. `chunkText` (main entry) cuts long
-text between words to fit a request limit.
+Three pieces of the surrounding machinery live in `@bozonx/ai-kit/translate`,
+because they are the same in every product that translates and quietly wrong
+when rewritten from memory. `chunkText` (main entry) cuts long text between
+words to fit a request limit.
 
+- **`splitParallelText`** — a source and its translation cut into pairs that
+  still correspond, for a repair pass over a long text: at paragraphs when both
+  sides have the same number, then lines, then sentences, and only then
+  proportionally — on a boundary, never through a word.
 - **`glossary.ts`** — a binding glossary, applied three times and differently
   each time: only the terms that occur in the text go into the prompt, a
   "do not translate" term is put back by replacement rather than asked for
@@ -268,7 +338,8 @@ text between words to fit a request limit.
 
 ## Installing only what you use
 
-The provider SDKs and `ws` are optional peer dependencies, loaded the first time
+`zod` is a peer dependency, so the schemas you pass and the ones the package
+validates with are the same copy. The provider SDKs and `ws` are optional peer dependencies, loaded the first time
 a route asks for one. A product that only calls OpenAI installs
 `@ai-sdk/openai` and nothing else; one that transcribes files but never dictates
 needs no `ws`. A missing package produces a sentence naming what to install

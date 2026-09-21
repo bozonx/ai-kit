@@ -47,6 +47,25 @@ const RETRYABLE: ReadonlySet<AiErrorKind> = new Set<AiErrorKind>([
   'timeout',
 ]);
 
+/**
+ * Failures that say something about the provider rather than the request.
+ *
+ * What a route's health automation should count. A bad request, a filtered
+ * answer or a context overflow would fail at any route, and holding one against
+ * the route it happened on demotes a healthy provider. `unknown` counts: an
+ * error nobody has classified yet is more often the provider's than ours.
+ */
+const PROVIDER_FAULTS: ReadonlySet<AiErrorKind> = new Set<AiErrorKind>([
+  'rate_limit',
+  'provider_unavailable',
+  'timeout',
+  'unknown',
+]);
+
+export function isProviderFault(kind: AiErrorKind): boolean {
+  return PROVIDER_FAULTS.has(kind);
+}
+
 export interface AiErrorOptions {
   provider?: string;
   model?: string;

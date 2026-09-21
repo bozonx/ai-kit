@@ -15,7 +15,7 @@ import type { TranslationProvider, TranslationProviderFactory } from './types.js
  */
 
 const BUILTIN_FACTORIES: Readonly<Record<string, TranslationProviderFactory>> = {
-  google: googleCloudTranslationProvider,
+  'google-translate': googleCloudTranslationProvider,
 };
 
 export interface MtRegistryOptions {

@@ -53,6 +53,40 @@ belong to a consumer had been written into the library.
   `@bozonx/ai-kit/translate` (`googleCloudTranslationProvider`, glossary,
   quality detectors, the adapter interfaces).
 
+### Changed — breaking (added before publication)
+
+- **The built-in Cloud Translation adapter is `google-translate`, not
+  `google`.** That id is Gemini's, and a `KeyProvider` is asked for a key by
+  provider id: under one name the two products shared a credential they do not
+  share. A consumer registering the adapter under its own id no longer has to.
+- **`zod` is a peer dependency.** A schema passed to `generate` is typed
+  against the package's `zod`; two copies meant two incompatible `ZodType`s.
+- Structured output uses `generateText` with `Output.object` instead of the
+  deprecated `generateObject`. Behaviour is unchanged; a schema violation is
+  still `invalid_output`.
+- `compactHistory` returns `summary: null` when nothing has been dropped.
+
+### Added (before publication)
+
+- **Tools.** `tools`, `toolChoice` and `maxSteps` on `generate` and `stream`;
+  tools make `needsTools` true. `GenerateResult` gains `toolCalls`, `steps` and
+  `responseMessages`. A stream with several steps sums every step's usage.
+  `tool` and `jsonSchema` are re-exported, with the `ToolSet` and `ToolChoice`
+  types.
+- **`providerOptions`** on every language-model request, passed through as is.
+- **Embeddings.** Model kind `embedding` (priced through `pricing`, with
+  `contextSize` as the per-input limit and descriptive `dimensions`),
+  `kit.embed`, built-in adapters for `google`, `openai` and `openrouter`,
+  `embeddingProviders` for others. `quoteCandidates` takes `embeddingTokens`.
+- **`signalsFor`** — `estimatedInputTokens` and `hasImages` from a request's
+  own messages, multi-part content included.
+- **`isProviderFault`** — which failure kinds a route's health should count.
+- **`compactHistory`** — the chat history window with a rolling summary, from
+  the consumer, generic over the message shape, with `unsummarized`.
+- **`splitParallelText`** in `/translate` — source and translation cut into
+  corresponding pairs at paragraphs, lines or sentences, never through a word.
+- `demotedRoutes` on the speech and translation policy inputs.
+
 ### Added
 
 - **Routes.** A model definition is its own first route; `routes:` adds backups

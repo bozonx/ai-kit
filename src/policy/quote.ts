@@ -27,6 +27,11 @@ export interface QuoteUsage {
   diarization?: boolean;
   /** Translation engines: characters handed over. */
   characters?: number;
+  /**
+   * Embeddings: tokens across every input. `signals.estimatedInputTokens`
+   * holds the largest single one, which is what the fit check needs.
+   */
+  embeddingTokens?: number;
 }
 
 export interface CandidateQuote {
@@ -75,6 +80,13 @@ function quoteOne(candidate: ModelCandidate, input: PolicyInput, usage: QuoteUsa
       return estimateMtCost(
         { ...priced, mtPricing: route.mtPricing },
         { characters: usage.characters ?? 0 },
+      );
+    case 'embedding':
+      if (!route.pricing) return 0;
+      return estimateCost(
+        { ...priced, pricing: route.pricing },
+        usage.embeddingTokens ?? input.signals.estimatedInputTokens,
+        0,
       );
     default:
       if (!route.pricing) return 0;

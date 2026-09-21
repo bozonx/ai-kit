@@ -1,7 +1,7 @@
 {
   "name": "@bozonx/ai-kit",
   "version": "0.3.0",
-  "description": "Reusable core for building AI features: priced model catalog, model policy, provider adapters, retries and prompt assembly",
+  "description": "Reusable core for building AI features: priced model catalog, model policy, provider adapters, retries, tools, embeddings and prompt assembly",
   "type": "module",
   "license": "MIT",
   "author": "Ivan K",
@@ -57,8 +57,7 @@
   },
   "dependencies": {
     "ai": "^7.0.84",
-    "js-yaml": "^5.3.0",
-    "zod": "^4.4.3"
+    "js-yaml": "^5.3.0"
   },
   "devDependencies": {
     "@ai-sdk/anthropic": "^4.0.46",
@@ -80,7 +79,8 @@
     "prettier": "^3.7.4",
     "ts-jest": "^29.4.6",
     "typescript": "^5.9.3",
-    "ws": "^8.21.3"
+    "ws": "^8.21.3",
+    "zod": "^4.4.3"
   },
   "engines": {
     "node": ">=22.0.0"
@@ -95,7 +95,8 @@
     "@ai-sdk/google": "^4.0.76",
     "@ai-sdk/openai": "^4.0.71",
     "@openrouter/ai-sdk-provider": "^3.1.0",
-    "ws": "^8.21.3"
+    "ws": "^8.21.3",
+    "zod": "^4.0.0"
   },
   "peerDependenciesMeta": {
     "@ai-sdk/anthropic": {

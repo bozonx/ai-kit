@@ -250,7 +250,8 @@ models:
 
   - name: google-translate
     kind: mt
-    provider: google
+    # Its own provider id: Cloud Translation takes a different key from Gemini.
+    provider: google-translate
     model: nmt
     tier: economy
     mtCapabilities:
@@ -263,6 +264,23 @@ models:
     weight: 10
     available: true
     tags: [cheap, bulk]
+
+  # Embeddings: billed per input token through the ordinary `pricing` block,
+  # with no output price. `contextSize` is the limit for one input.
+
+  - name: gemini-embedding-001
+    kind: embedding
+    provider: google
+    model: gemini-embedding-001
+    tier: standard
+    contextSize: 2048
+    dimensions: 3072
+    pricing:
+      version: '2026-08'
+      inputPerMTok: 150000
+      outputPerMTok: 0
+    available: true
+    tags: [search]
 
 
 # Which models are candidates for which kind of work, in order. The first one
@@ -296,3 +314,7 @@ taskClasses:
   # Translation by a dedicated engine. A class may not mix kinds, so this one
   # holds engines and the `translate` class above holds language models.
   translate_fast: [google-translate]
+  # Embeddings. One model only: vectors from two different models cannot share
+  # an index, so a fallback to another model would corrupt it. Backup routes of
+  # the same model are fine.
+  search_index: [gemini-embedding-001]

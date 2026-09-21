@@ -85,6 +85,7 @@ export {
   NoSuitableModelError,
   CatalogError,
   isAiError,
+  isProviderFault,
   callStatusFor,
 } from './errors.js';
 export type { AiErrorKind, AiErrorOptions, CandidateFailure } from './errors.js';
@@ -128,15 +129,23 @@ export type {
  * `ai` itself to type a conversation, and so that an SDK upgrade is one bump in
  * one package instead of a coordinated one across every product.
  */
-export type { ModelMessage } from 'ai';
+export type { ModelMessage, ToolSet, ToolChoice } from 'ai';
+
+/**
+ * Defining a tool is the SDK's own helper, re-exported for the same reason as
+ * the message type: a consumer should not need `ai` as a dependency of its own.
+ */
+export { tool, jsonSchema } from 'ai';
 
 export { createAiKit } from './kit.js';
 export type { AiKit, AiKitOptions } from './kit.js';
 
-export type { ProviderFactory } from './providers/registry.js';
+export type { ProviderFactory, EmbeddingProviderFactory } from './providers/registry.js';
 
 export { selectCandidates, fitsSignals, speaksLanguage } from './policy/policy.js';
 export type { PolicyInput, PolicySignals, ModelCandidate } from './policy/policy.js';
+
+export { signalsFor } from './policy/signals.js';
 
 export { quoteCandidates } from './policy/quote.js';
 export type { QuoteUsage, CandidateQuote } from './policy/quote.js';
@@ -148,7 +157,16 @@ export type {
   GenerateResult,
   StreamRequest,
   CallAccounting,
+  ProviderOptions,
+  ToolActivity,
 } from './execute/run.js';
+
+export type {
+  EmbedRequest,
+  EmbedResult,
+  EmbedAccounting,
+  EmbedPolicyInput,
+} from './execute/embed.js';
 
 /** For authors of provider adapters, so their failures classify like ours. */
 export { classifyError, kindFromStatus } from './execute/classify.js';
@@ -201,3 +219,6 @@ export { parseModelInput, formatModelRef } from './utils/model-ref.js';
 export type { ModelRef, ParsedModelInput } from './utils/model-ref.js';
 
 export { chunkText } from './utils/chunk-text.js';
+
+export { compactHistory } from './chat/compaction.js';
+export type { CompactableMessage, CompactionInput, CompactionResult } from './chat/compaction.js';

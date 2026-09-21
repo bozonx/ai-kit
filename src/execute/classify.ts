@@ -3,6 +3,7 @@ import {
   InvalidPromptError,
   LoadAPIKeyError,
   NoObjectGeneratedError,
+  NoOutputGeneratedError,
   TypeValidationError,
 } from 'ai';
 
@@ -99,7 +100,11 @@ export function classifyError(error: unknown, context: ClassifyContext = {}): Ai
     return new AiError('auth', message, options);
   }
 
-  if (NoObjectGeneratedError.isInstance(error) || TypeValidationError.isInstance(error)) {
+  if (
+    NoObjectGeneratedError.isInstance(error) ||
+    NoOutputGeneratedError.isInstance(error) ||
+    TypeValidationError.isInstance(error)
+  ) {
     return new AiError('invalid_output', 'The model produced output the schema rejects', options);
   }
 

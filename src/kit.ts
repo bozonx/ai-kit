@@ -20,7 +20,12 @@ import {
   type TraceSink,
   type UsageSink,
 } from './ports.js';
-import { ProviderRegistry, type ProviderFactory } from './providers/registry.js';
+import { runEmbed, type EmbedRequest, type EmbedResult } from './execute/embed.js';
+import {
+  ProviderRegistry,
+  type EmbeddingProviderFactory,
+  type ProviderFactory,
+} from './providers/registry.js';
 import type { StreamPart } from './stream/stream-parts.js';
 import { SttProviderRegistry } from './stt/registry.js';
 import {
@@ -61,6 +66,8 @@ export interface AiKitOptions {
   retry?: Partial<RetryPolicy>;
   /** Adapters for providers the package does not ship, or replacements. */
   providers?: Record<string, ProviderFactory>;
+  /** The same, for embedding models. */
+  embeddingProviders?: Record<string, EmbeddingProviderFactory>;
   /** The same, for speech. A separate map because they are separate clients. */
   sttProviders?: Record<string, SttProviderFactory>;
   /** And for dedicated translation engines. */
@@ -84,6 +91,8 @@ export interface AiKit {
   transcribeStream(request: StreamTranscribeRequest): AsyncIterable<TranscriptPart>;
   /** One batch of strings through a dedicated translation engine. */
   translate(request: TranslateRequest): Promise<TranslateResult>;
+  /** One batch of strings, one vector each. */
+  embed(request: EmbedRequest): Promise<EmbedResult>;
 }
 
 export function createAiKit(options: AiKitOptions): AiKit {
@@ -95,7 +104,11 @@ export function createAiKit(options: AiKitOptions): AiKit {
 
   const deps: ExecutionDeps = {
     catalog: options.catalog,
-    registry: new ProviderRegistry({ keys: options.keys, factories: options.providers }),
+    registry: new ProviderRegistry({
+      keys: options.keys,
+      factories: options.providers,
+      embeddingFactories: options.embeddingProviders,
+    }),
     usage,
     trace,
     attempts,
@@ -130,5 +143,6 @@ export function createAiKit(options: AiKitOptions): AiKit {
     transcribe: request => runTranscribe(sttDeps, request),
     transcribeStream: request => runTranscribeStream(sttDeps, request),
     translate: request => runTranslate(mtDeps, request),
+    embed: request => runEmbed(deps, request),
   };
 }

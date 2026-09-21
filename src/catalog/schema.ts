@@ -37,7 +37,7 @@ export const taskClassSchema = z.string().min(1);
  * places where somebody forgets to bump a price version. They do not share a
  * task class, and that is enforced below rather than remembered.
  */
-export const modelKindSchema = z.enum(['llm', 'stt', 'mt']);
+export const modelKindSchema = z.enum(['llm', 'stt', 'mt', 'embedding']);
 export type ModelKind = z.infer<typeof modelKindSchema>;
 
 /**
@@ -240,7 +240,10 @@ export const modelSchema = z
     /** Backup routes: the same model somewhere else. */
     routes: z.array(modelRouteSchema).default([]),
     tier: modelTierSchema,
-    /** Language models only; meaningless for a model billed by the second. */
+    /**
+     * Language models: the whole window. Embedding models: the most tokens one
+     * input may have. Meaningless for a model billed by the second.
+     */
     contextSize: z.number().int().positive().optional(),
     maxOutputTokens: z.number().int().positive().optional(),
     /**
@@ -259,6 +262,12 @@ export const modelSchema = z
     sttPricing: sttPricingSchema.optional(),
     mtCapabilities: mtCapabilitiesSchema.optional(),
     mtPricing: mtPricingSchema.optional(),
+    /**
+     * Length of the vectors an embedding model returns. Descriptive: vectors
+     * of different lengths cannot share an index, and the consumer's index is
+     * where that has to be checked.
+     */
+    dimensions: z.number().int().positive().optional(),
     /**
      * Languages the model claims, as BCP-47 tags. Empty means "any", the same
      * convention language models get by saying nothing.
@@ -291,6 +300,25 @@ export const modelSchema = z
         issue(`has more than one route at provider "${route.provider}"`);
       }
       providers.add(route.provider);
+    }
+
+    if (model.kind !== 'embedding' && model.dimensions !== undefined) {
+      issue('`dimensions` belongs to a model of kind `embedding`');
+    }
+
+    if (model.kind === 'embedding') {
+      // Priced per input token through the ordinary `pricing` block: an
+      // embedding is billed exactly like a prompt that produces no answer.
+      if (!model.pricing) issue('an embedding model needs `pricing`');
+      if (model.contextSize === undefined) issue('an embedding model needs `contextSize`');
+      if (model.sttPricing) issue('`sttPricing` belongs to a model of kind `stt`');
+      if (model.mtPricing) issue('`mtPricing` belongs to a model of kind `mt`');
+      for (const route of model.routes) {
+        if (route.sttPricing ?? route.mtPricing) {
+          issue(`route at "${route.provider}" prices a different kind of model`);
+        }
+      }
+      return;
     }
 
     if (model.kind === 'llm') {

@@ -1,4 +1,4 @@
-import type { LanguageModel } from 'ai';
+import type { EmbeddingModel, LanguageModel } from 'ai';
 
 import type { ResolvedRoute } from '../catalog/catalog.js';
 import type { ModelDefinition } from '../catalog/schema.js';
@@ -33,6 +33,13 @@ export type ProviderFactory = (params: {
  * The alternative is a module-resolution stack trace, which is the same
  * information written for somebody who already knows the answer.
  */
+/** The same, for embedding models. */
+export type EmbeddingProviderFactory = (params: {
+  apiKey: string;
+  modelId: string;
+  baseUrl?: string;
+}) => EmbeddingModel | Promise<EmbeddingModel>;
+
 async function load<T>(specifier: string, importer: () => Promise<T>): Promise<T> {
   try {
     return await importer();
@@ -70,6 +77,32 @@ const BUILTIN_FACTORIES: Readonly<Record<string, ProviderFactory>> = {
   },
 };
 
+const BUILTIN_EMBEDDING_FACTORIES: Readonly<Record<string, EmbeddingProviderFactory>> = {
+  google: async ({ apiKey, modelId, baseUrl }) => {
+    const { createGoogleGenerativeAI } = await load(
+      '@ai-sdk/google',
+      () => import('@ai-sdk/google'),
+    );
+    return createGoogleGenerativeAI({
+      apiKey,
+      ...(baseUrl ? { baseURL: baseUrl } : {}),
+    }).embedding(modelId);
+  },
+  openrouter: async ({ apiKey, modelId, baseUrl }) => {
+    const { createOpenRouter } = await load(
+      '@openrouter/ai-sdk-provider',
+      () => import('@openrouter/ai-sdk-provider'),
+    );
+    return createOpenRouter({ apiKey, ...(baseUrl ? { baseURL: baseUrl } : {}) }).embedding(
+      modelId,
+    );
+  },
+  openai: async ({ apiKey, modelId, baseUrl }) => {
+    const { createOpenAI } = await load('@ai-sdk/openai', () => import('@ai-sdk/openai'));
+    return createOpenAI({ apiKey, ...(baseUrl ? { baseURL: baseUrl } : {}) }).embedding(modelId);
+  },
+};
+
 export interface ProviderRegistryOptions {
   keys: KeyProvider;
   /**
@@ -79,6 +112,8 @@ export interface ProviderRegistryOptions {
    * existing one at a proxy, without waiting for a release.
    */
   factories?: Record<string, ProviderFactory>;
+  /** Extra or replacement embedding adapters, by provider id. */
+  embeddingFactories?: Record<string, EmbeddingProviderFactory>;
 }
 
 /**
@@ -92,11 +127,42 @@ export interface ProviderRegistryOptions {
 export class ProviderRegistry {
   private readonly keys: KeyProvider;
   private readonly factories: Readonly<Record<string, ProviderFactory>>;
+  private readonly embeddingFactories: Readonly<Record<string, EmbeddingProviderFactory>>;
   private readonly cache = new ClientCache<LanguageModel>();
+  private readonly embeddingCache = new ClientCache<EmbeddingModel>();
 
   constructor(options: ProviderRegistryOptions) {
     this.keys = options.keys;
     this.factories = { ...BUILTIN_FACTORIES, ...options.factories };
+    this.embeddingFactories = { ...BUILTIN_EMBEDDING_FACTORIES, ...options.embeddingFactories };
+  }
+
+  /**
+   * An embedding model for a route, cached like a language model.
+   *
+   * @throws AiError('invalid_request') when no embedding adapter is registered
+   *   for the provider, and AiError('auth') when there is no key for it.
+   */
+  public async embeddingModel(
+    model: ModelDefinition,
+    route: ResolvedRoute,
+    overrides?: KeyOverrides,
+  ): Promise<EmbeddingModel> {
+    const factory = this.embeddingFactories[route.provider];
+    if (!factory) {
+      throw new AiError(
+        'invalid_request',
+        `No embedding adapter registered for provider "${route.provider}"`,
+        { provider: route.provider, model: model.name },
+      );
+    }
+
+    const apiKey = await keyFor(this.keys, model, route, overrides);
+    const baseUrl = route.baseUrl === undefined ? {} : { baseUrl: route.baseUrl };
+    return this.embeddingCache.resolve(
+      { provider: route.provider, model: route.model, apiKey, ...baseUrl },
+      () => factory({ apiKey, modelId: route.model, ...baseUrl }),
+    );
   }
 
   public has(provider: string): boolean {
