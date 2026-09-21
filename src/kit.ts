@@ -20,8 +20,10 @@ import {
   type Clock,
   type KeyProvider,
   type TraceSink,
+  type Transport,
   type UsageSink,
 } from './ports.js';
+import { resolveTransport } from './transport/platform.js';
 import { runEmbed, type EmbedRequest, type EmbedResult } from './execute/embed.js';
 import {
   ProviderRegistry,
@@ -78,6 +80,12 @@ export interface AiKitOptions {
   sttProviders?: Record<string, SttProviderFactory>;
   /** And for dedicated translation engines. */
   mtProviders?: Record<string, TranslationProviderFactory>;
+  /**
+   * How to reach the network, where the platform's own `fetch` and `WebSocket`
+   * will not do: a Tauri HTTP plugin past CORS, a socket that can send headers
+   * in a browser, a proxy. Either half may be given alone.
+   */
+  transport?: Partial<Transport>;
 }
 
 /**
@@ -131,11 +139,13 @@ export function createAiKit(options: AiKitOptions): AiKit {
   const clock = options.clock ?? systemClock;
   const attempts = options.attempts ?? noopAttemptObserver;
   const retry = { ...DEFAULT_RETRY_POLICY, ...options.retry };
+  const transport = resolveTransport(options.transport);
 
   const deps: ExecutionDeps = {
     catalog: options.catalog,
     registry: new ProviderRegistry({
       keys: options.keys,
+      transport,
       factories: options.providers,
       embeddingFactories: options.embeddingProviders,
     }),
@@ -148,7 +158,11 @@ export function createAiKit(options: AiKitOptions): AiKit {
 
   const sttDeps: SttExecutionDeps = {
     catalog: options.catalog,
-    registry: new SttProviderRegistry({ keys: options.keys, factories: options.sttProviders }),
+    registry: new SttProviderRegistry({
+      keys: options.keys,
+      transport,
+      factories: options.sttProviders,
+    }),
     usage,
     trace,
     attempts,
@@ -158,7 +172,11 @@ export function createAiKit(options: AiKitOptions): AiKit {
 
   const mtDeps: MtExecutionDeps = {
     catalog: options.catalog,
-    registry: new MtProviderRegistry({ keys: options.keys, factories: options.mtProviders }),
+    registry: new MtProviderRegistry({
+      keys: options.keys,
+      transport,
+      factories: options.mtProviders,
+    }),
     usage,
     trace,
     attempts,

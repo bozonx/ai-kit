@@ -1,5 +1,3 @@
-import { createHash } from 'node:crypto';
-
 import type { ResolvedRoute } from '../catalog/catalog.js';
 import type { ModelDefinition } from '../catalog/schema.js';
 import { AiError } from '../errors.js';
@@ -41,7 +39,7 @@ export class ClientCache<T> {
     parts: { provider: string; baseUrl?: string; model?: string; apiKey: string },
     build: () => T | Promise<T>,
   ): Promise<T> {
-    const fingerprint = createHash('sha256').update(parts.apiKey).digest('hex');
+    const fingerprint = await sha256(parts.apiKey);
     const key = [parts.provider, parts.baseUrl ?? '', parts.model ?? '', fingerprint].join('\0');
 
     const cached = this.entries.get(key);
@@ -64,6 +62,15 @@ export class ClientCache<T> {
   public get size(): number {
     return this.entries.size;
   }
+}
+
+/**
+ * Web Crypto rather than `node:crypto`, because it is the one digest every
+ * runtime the package targets has: Node, browsers, Tauri's webview, Deno.
+ */
+async function sha256(text: string): Promise<string> {
+  const digest = await globalThis.crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+  return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
 }
 
 /**

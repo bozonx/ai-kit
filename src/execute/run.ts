@@ -10,7 +10,7 @@ import {
 import type { z } from 'zod';
 
 import type { Catalog } from '../catalog/catalog.js';
-import { calculateCost, estimateTokens } from '../catalog/pricing.js';
+import { calculateCost, estimateTokens, UNPRICED } from '../catalog/pricing.js';
 import { AiError, StreamInterruptedError, callStatusFor } from '../errors.js';
 import {
   selectCandidates,
@@ -19,7 +19,7 @@ import {
   type PolicyInput,
   type PolicySignals,
 } from '../policy/policy.js';
-import { quoteCandidate, type CandidatePlan } from '../policy/quote.js';
+import { isPriced, quoteCandidate, type CandidatePlan } from '../policy/quote.js';
 import { signalsFor } from '../policy/signals.js';
 import type { CallAccounting, CallStatus, TokenUsage, UsageSink } from '../ports.js';
 import type { ProviderRegistry } from '../providers/registry.js';
@@ -233,22 +233,22 @@ function accounting(
   // fallback the two are the same model at different money, and charging the
   // first choice's price for the second one's work is a discrepancy that only
   // shows up when somebody reconciles an invoice.
-  const cost = calculateCost(
-    {
-      name: candidate.model.name,
-      provider: candidate.route.provider,
-      ...(candidate.route.pricing === undefined ? {} : { pricing: candidate.route.pricing }),
-    },
-    usage,
-  );
+  const pricing = candidate.route.pricing;
+  const cost = pricing
+    ? calculateCost(
+        { name: candidate.model.name, provider: candidate.route.provider, pricing },
+        usage,
+      )
+    : undefined;
   return {
     provider: candidate.route.provider,
     model: candidate.model.name,
     ...(candidate.route.id === undefined ? {} : { routeId: candidate.route.id }),
     routedBy: candidate.routedBy,
     usage,
-    costMicros: cost.totalMicros,
-    priceVersion: cost.priceVersion,
+    costMicros: cost?.totalMicros ?? 0,
+    priceVersion: cost?.priceVersion ?? UNPRICED,
+    priced: cost !== undefined,
     attempts,
     latencyMs,
   };
@@ -270,6 +270,7 @@ function recordUsage(
       usage: data.usage,
       costMicros: data.costMicros,
       priceVersion: data.priceVersion,
+      priced: data.priced,
       status,
       latencyMs: data.latencyMs,
       attempts: data.attempts,
@@ -320,6 +321,7 @@ export function planCall(
     candidates,
     quotes: candidates.map(candidate => ({
       candidate,
+      priced: isPriced(candidate),
       costMicros: quoteCandidate(candidate, policy),
     })),
     maxOutputTokens:

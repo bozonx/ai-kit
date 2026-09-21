@@ -183,11 +183,14 @@ function withinBudget(model: ModelDefinition, route: ResolvedRoute, input: Polic
   // character count, both of which are better numbers than anything guessable
   // from the request shape here.
   if (model.kind !== 'llm') return true;
+  // Nothing to hold against the budget: an unpriced route is recorded at zero,
+  // and a catalog that allows one has said its calls are not billed.
+  if (!route.pricing) return true;
   const worstCase = estimateCost(
     {
       name: model.name,
       provider: route.provider,
-      ...(route.pricing === undefined ? {} : { pricing: route.pricing }),
+      pricing: route.pricing,
       ...(model.maxOutputTokens === undefined ? {} : { maxOutputTokens: model.maxOutputTokens }),
     },
     input.signals.estimatedInputTokens,

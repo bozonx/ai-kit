@@ -5,7 +5,10 @@ import type { AddressInfo } from 'node:net';
 import { isAiError } from '../src/errors.js';
 import { assemblyAiSttProvider } from '../src/stt/providers/assemblyai.js';
 import { deepgramSttProvider } from '../src/stt/providers/deepgram.js';
+import { wsSocketOpener } from '../src/node/ws.js';
+import type { SocketOpener } from '../src/ports.js';
 import { openSocket } from '../src/stt/providers/socket.js';
+import { platformSocket } from '../src/transport/platform.js';
 import type {
   AudioChunk,
   ProviderStreamRequest,
@@ -66,7 +69,12 @@ async function collect(events: AsyncIterable<SttStreamEvent>): Promise<SttStream
   return seen;
 }
 
-describe('openSocket', () => {
+const openers: Array<[string, SocketOpener]> = [
+  ['the platform WebSocket', platformSocket],
+  ['ws', wsSocketOpener],
+];
+
+describe.each(openers)('openSocket over %s', (_name, opener) => {
   it('delivers messages in order and ends when the server closes cleanly', async () => {
     const url = await serve(socket => {
       socket.send('one');
@@ -77,6 +85,7 @@ describe('openSocket', () => {
     const session = await openSocket(url, {
       signal: AbortSignal.timeout(5_000),
       context: { provider: 'test', model: 'test' },
+      openSocket: opener,
     });
 
     const messages: string[] = [];
@@ -93,6 +102,7 @@ describe('openSocket', () => {
     const session = await openSocket(url, {
       signal: AbortSignal.timeout(5_000),
       context: { provider: 'test', model: 'test' },
+      openSocket: opener,
     });
 
     const messages: string[] = [];
@@ -109,7 +119,7 @@ describe('openSocket', () => {
     expect(isAiError(error) && error.kind).toBe('provider_unavailable');
   });
 
-  it('carries the authorization header, which is why it is not the platform socket', async () => {
+  it('carries the authorization header', async () => {
     let seen: unknown;
     const url = await serve((socket, request) => {
       seen = request.headers.authorization;
@@ -120,16 +130,39 @@ describe('openSocket', () => {
       headers: { authorization: 'Token secret' },
       signal: AbortSignal.timeout(5_000),
       context: { provider: 'test', model: 'test' },
+      openSocket: opener,
     });
     for await (const _ of session.messages) void _;
 
     expect(seen).toBe('Token secret');
   });
 
+  it('still delivers what the server sends after being told the stream is over', async () => {
+    const url = await serve(socket => {
+      socket.on('message', (data: Buffer) => {
+        if (data.toString() !== 'end') return;
+        socket.send('tail');
+        setTimeout(() => socket.close(1000), 20);
+      });
+    });
+
+    const session = await openSocket(url, {
+      signal: AbortSignal.timeout(5_000),
+      context: { provider: 'test', model: 'test' },
+      openSocket: opener,
+    });
+    session.close('end');
+
+    const messages: string[] = [];
+    for await (const message of session.messages) messages.push(message);
+    expect(messages).toEqual(['tail']);
+  });
+
   it('fails rather than hanging when nobody is listening at the other end', async () => {
     const error = await openSocket('ws://127.0.0.1:1/nothing', {
       signal: AbortSignal.timeout(5_000),
       context: { provider: 'test', model: 'test' },
+      openSocket: opener,
     }).catch((caught: unknown) => caught);
 
     expect(isAiError(error) && error.kind).toBe('provider_unavailable');
@@ -144,6 +177,7 @@ describe('openSocket', () => {
     const session = await openSocket(url, {
       signal: controller.signal,
       context: { provider: 'test', model: 'test' },
+      openSocket: opener,
     });
 
     const messages: string[] = [];

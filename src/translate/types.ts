@@ -9,6 +9,8 @@
  * anybody's domain as the rest of it.
  */
 
+import type { FetchFunction } from '../ports.js';
+
 /** Whether the strings carry markup the engine has to preserve. */
 export type TranslationFormat = 'text' | 'html';
 
@@ -47,4 +49,6 @@ export type TranslationProviderFactory = (init: {
   apiKey: string;
   /** Set when the catalog points the model at a non-default endpoint. */
   baseUrl?: string;
+  /** The kit's `fetch`. Absent when an adapter is built by hand: use the platform's. */
+  fetch?: FetchFunction;
 }) => TranslationProvider;

@@ -3,7 +3,7 @@ import type { EmbeddingModel, LanguageModel } from 'ai';
 import type { ResolvedRoute } from '../catalog/catalog.js';
 import type { ModelDefinition } from '../catalog/schema.js';
 import { AiError } from '../errors.js';
-import type { KeyProvider } from '../ports.js';
+import type { FetchFunction, KeyProvider, Transport } from '../ports.js';
 import { ClientCache, keyFor, type KeyOverrides } from './client-cache.js';
 
 /**
@@ -25,6 +25,8 @@ export type ProviderFactory = (params: {
   modelId: string;
   /** Set when the catalog points the route at a non-default endpoint. */
   baseUrl?: string;
+  /** The kit's `fetch`, for the SDK to send every request through. */
+  fetch?: FetchFunction;
 }) => LanguageModel | Promise<LanguageModel>;
 
 /** The same, for embedding models. */
@@ -32,6 +34,7 @@ export type EmbeddingProviderFactory = (params: {
   apiKey: string;
   modelId: string;
   baseUrl?: string;
+  fetch?: FetchFunction;
 }) => EmbeddingModel | Promise<EmbeddingModel>;
 
 /**
@@ -52,59 +55,109 @@ async function load<T>(specifier: string, importer: () => Promise<T>): Promise<T
   }
 }
 
+type FactoryParams = Parameters<ProviderFactory>[0];
+
+/** What every SDK provider's `create…` function accepts, from our params. */
+function settings({ apiKey, baseUrl, fetch }: FactoryParams): {
+  apiKey: string;
+  baseURL?: string;
+  fetch?: FetchFunction;
+} {
+  return {
+    apiKey,
+    ...(baseUrl === undefined ? {} : { baseURL: baseUrl }),
+    ...(fetch === undefined ? {} : { fetch }),
+  };
+}
+
+/**
+ * A server that speaks OpenAI's chat completions and is not OpenAI.
+ *
+ * Ollama, LM Studio, vLLM or a company proxy — reached only through the
+ * catalog's `baseUrl`, which is therefore required. The key is optional
+ * because a local server usually has none, and an empty bearer token is a
+ * refusal at the ones that check.
+ */
+async function openAiCompatible(params: FactoryParams) {
+  if (params.baseUrl === undefined) {
+    throw new AiError(
+      'invalid_request',
+      'Provider "openai-compatible" has no default endpoint; set `baseUrl` in the catalog',
+      { provider: 'openai-compatible', model: params.modelId },
+    );
+  }
+  const { createOpenAICompatible } = await load(
+    '@ai-sdk/openai-compatible',
+    () => import('@ai-sdk/openai-compatible'),
+  );
+  return createOpenAICompatible({
+    name: 'openai-compatible',
+    baseURL: params.baseUrl,
+    ...(params.apiKey.length > 0 ? { apiKey: params.apiKey } : {}),
+    ...(params.fetch === undefined ? {} : { fetch: params.fetch }),
+    // Without it a streamed answer carries no token counts, and a call nobody
+    // can count is a call nobody can price.
+    includeUsage: true,
+  });
+}
+
 const BUILTIN_FACTORIES: Readonly<Record<string, ProviderFactory>> = {
-  google: async ({ apiKey, modelId, baseUrl }) => {
+  google: async params => {
     const { createGoogleGenerativeAI } = await load(
       '@ai-sdk/google',
       () => import('@ai-sdk/google'),
     );
-    return createGoogleGenerativeAI({ apiKey, ...(baseUrl ? { baseURL: baseUrl } : {}) })(modelId);
+    return createGoogleGenerativeAI(settings(params))(params.modelId);
   },
-  openrouter: async ({ apiKey, modelId, baseUrl }) => {
+  openrouter: async params => {
     const { createOpenRouter } = await load(
       '@openrouter/ai-sdk-provider',
       () => import('@openrouter/ai-sdk-provider'),
     );
-    return createOpenRouter({ apiKey, ...(baseUrl ? { baseURL: baseUrl } : {}) })(modelId);
+    return createOpenRouter(settings(params))(params.modelId);
   },
-  openai: async ({ apiKey, modelId, baseUrl }) => {
+  openai: async params => {
     const { createOpenAI } = await load('@ai-sdk/openai', () => import('@ai-sdk/openai'));
-    return createOpenAI({ apiKey, ...(baseUrl ? { baseURL: baseUrl } : {}) })(modelId);
+    return createOpenAI(settings(params))(params.modelId);
   },
-  anthropic: async ({ apiKey, modelId, baseUrl }) => {
+  anthropic: async params => {
     const { createAnthropic } = await load('@ai-sdk/anthropic', () => import('@ai-sdk/anthropic'));
-    return createAnthropic({ apiKey, ...(baseUrl ? { baseURL: baseUrl } : {}) })(modelId);
+    return createAnthropic(settings(params))(params.modelId);
   },
+  deepseek: async params => {
+    const { createDeepSeek } = await load('@ai-sdk/deepseek', () => import('@ai-sdk/deepseek'));
+    return createDeepSeek(settings(params))(params.modelId);
+  },
+  'openai-compatible': async params => (await openAiCompatible(params)).chatModel(params.modelId),
 };
 
 const BUILTIN_EMBEDDING_FACTORIES: Readonly<Record<string, EmbeddingProviderFactory>> = {
-  google: async ({ apiKey, modelId, baseUrl }) => {
+  google: async params => {
     const { createGoogleGenerativeAI } = await load(
       '@ai-sdk/google',
       () => import('@ai-sdk/google'),
     );
-    return createGoogleGenerativeAI({
-      apiKey,
-      ...(baseUrl ? { baseURL: baseUrl } : {}),
-    }).embedding(modelId);
+    return createGoogleGenerativeAI(settings(params)).embedding(params.modelId);
   },
-  openrouter: async ({ apiKey, modelId, baseUrl }) => {
+  openrouter: async params => {
     const { createOpenRouter } = await load(
       '@openrouter/ai-sdk-provider',
       () => import('@openrouter/ai-sdk-provider'),
     );
-    return createOpenRouter({ apiKey, ...(baseUrl ? { baseURL: baseUrl } : {}) }).embedding(
-      modelId,
-    );
+    return createOpenRouter(settings(params)).embedding(params.modelId);
   },
-  openai: async ({ apiKey, modelId, baseUrl }) => {
+  openai: async params => {
     const { createOpenAI } = await load('@ai-sdk/openai', () => import('@ai-sdk/openai'));
-    return createOpenAI({ apiKey, ...(baseUrl ? { baseURL: baseUrl } : {}) }).embedding(modelId);
+    return createOpenAI(settings(params)).embedding(params.modelId);
   },
+  'openai-compatible': async params =>
+    (await openAiCompatible(params)).embeddingModel(params.modelId),
 };
 
 export interface ProviderRegistryOptions {
   keys: KeyProvider;
+  /** Its `fetch` is handed to every adapter. Omitted means the SDK's default. */
+  transport?: Transport;
   /**
    * Extra or replacement adapters, by provider id.
    *
@@ -126,6 +179,7 @@ export interface ProviderRegistryOptions {
  */
 export class ProviderRegistry {
   private readonly keys: KeyProvider;
+  private readonly fetch: FetchFunction | undefined;
   private readonly factories: Readonly<Record<string, ProviderFactory>>;
   private readonly embeddingFactories: Readonly<Record<string, EmbeddingProviderFactory>>;
   private readonly cache = new ClientCache<LanguageModel>();
@@ -133,6 +187,7 @@ export class ProviderRegistry {
 
   constructor(options: ProviderRegistryOptions) {
     this.keys = options.keys;
+    this.fetch = options.transport?.fetch;
     this.factories = { ...BUILTIN_FACTORIES, ...options.factories };
     this.embeddingFactories = { ...BUILTIN_EMBEDDING_FACTORIES, ...options.embeddingFactories };
   }
@@ -161,7 +216,7 @@ export class ProviderRegistry {
     const baseUrl = route.baseUrl === undefined ? {} : { baseUrl: route.baseUrl };
     return this.embeddingCache.resolve(
       { provider: route.provider, model: route.model, apiKey, ...baseUrl },
-      () => factory({ apiKey, modelId: route.model, ...baseUrl }),
+      () => factory({ apiKey, modelId: route.model, ...baseUrl, ...this.fetchParam() }),
     );
   }
 
@@ -206,7 +261,12 @@ export class ProviderRegistry {
           apiKey,
           modelId: route.model,
           ...(route.baseUrl === undefined ? {} : { baseUrl: route.baseUrl }),
+          ...this.fetchParam(),
         }),
     );
+  }
+
+  private fetchParam(): { fetch?: FetchFunction } {
+    return this.fetch === undefined ? {} : { fetch: this.fetch };
   }
 }

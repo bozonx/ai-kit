@@ -307,9 +307,6 @@ export const modelSchema = z
     }
 
     if (model.kind === 'embedding') {
-      // Priced per input token through the ordinary `pricing` block: an
-      // embedding is billed exactly like a prompt that produces no answer.
-      if (!model.pricing) issue('an embedding model needs `pricing`');
       if (model.contextSize === undefined) issue('an embedding model needs `contextSize`');
       if (model.sttPricing) issue('`sttPricing` belongs to a model of kind `stt`');
       if (model.mtPricing) issue('`mtPricing` belongs to a model of kind `mt`');
@@ -322,7 +319,6 @@ export const modelSchema = z
     }
 
     if (model.kind === 'llm') {
-      if (!model.pricing) issue('a language model needs `pricing`');
       if (model.sttPricing) issue('`sttPricing` belongs to a model of kind `stt`');
       if (model.sttCapabilities) issue('`sttCapabilities` belongs to a model of kind `stt`');
       if (model.mtPricing) issue('`mtPricing` belongs to a model of kind `mt`');
@@ -337,7 +333,6 @@ export const modelSchema = z
     }
 
     if (model.kind === 'mt') {
-      if (!model.mtPricing) issue('a translation model needs `mtPricing`');
       if (model.pricing) issue('`pricing` is per token and belongs to a model of kind `llm`');
       if (model.sttPricing) issue('`sttPricing` belongs to a model of kind `stt`');
       for (const route of model.routes) {
@@ -348,7 +343,6 @@ export const modelSchema = z
       return;
     }
 
-    if (!model.sttPricing) issue('a speech model needs `sttPricing`');
     if (model.pricing) issue('`pricing` is per token and belongs to a model of kind `llm`');
     if (model.mtPricing) issue('`mtPricing` belongs to a model of kind `mt`');
     for (const route of model.routes) {
@@ -356,15 +350,19 @@ export const modelSchema = z
         issue(`route at "${route.provider}" prices a different kind of model`);
       }
     }
+    // The surcharges are checked only on a price block that exists: a model
+    // with no price at all is the catalog-level decision `requirePricing`.
     if (
+      model.sttPricing &&
       model.sttCapabilities?.realtime &&
-      model.sttPricing?.perAudioHourRealtimeMicros === undefined
+      model.sttPricing.perAudioHourRealtimeMicros === undefined
     ) {
       issue('a realtime speech model needs `sttPricing.perAudioHourRealtimeMicros`');
     }
     if (
+      model.sttPricing &&
       model.sttCapabilities?.diarization &&
-      model.sttPricing?.diarizationPerAudioHourMicros === undefined
+      model.sttPricing.diarizationPerAudioHourMicros === undefined
     ) {
       // Not an error of taste: a surcharge nobody wrote down is a surcharge
       // that arrives on the invoice and in nobody's usage table.
@@ -373,6 +371,22 @@ export const modelSchema = z
   });
 
 export type ModelDefinition = z.infer<typeof modelSchema>;
+
+/** The price block a model of this kind is billed by, when it has none. */
+function missingPrice(model: ModelDefinition): string | undefined {
+  switch (model.kind) {
+    // Priced per input token through the ordinary `pricing` block: an
+    // embedding is billed exactly like a prompt that produces no answer.
+    case 'embedding':
+      return model.pricing ? undefined : 'an embedding model needs `pricing`';
+    case 'llm':
+      return model.pricing ? undefined : 'a language model needs `pricing`';
+    case 'mt':
+      return model.mtPricing ? undefined : 'a translation model needs `mtPricing`';
+    case 'stt':
+      return model.sttPricing ? undefined : 'a speech model needs `sttPricing`';
+  }
+}
 
 /**
  * A model as it is written down, before the defaults are filled in.
@@ -395,8 +409,31 @@ export const catalogSchema = z
      * class whose requests would be routed by whichever happened to be first.
      */
     taskClasses: z.record(taskClassSchema, z.array(z.string().min(1)).min(1)),
+    /**
+     * Whether every model has to carry a price.
+     *
+     * On by default, because a product that bills its users must never learn
+     * from an invoice that a model was quietly free in its usage table. Off is
+     * for a catalog nobody is billed through — a desktop app on the user's own
+     * key, a local model — where an unpriced call is recorded as exactly that:
+     * `priced: false`, zero cost, price version `unpriced`.
+     */
+    requirePricing: z.boolean().default(true),
   })
   .superRefine((catalog, ctx) => {
+    if (catalog.requirePricing) {
+      catalog.models.forEach((model, index) => {
+        const missing = missingPrice(model);
+        if (missing) {
+          ctx.addIssue({
+            code: 'custom',
+            path: ['models', index, 'name'],
+            message: `${model.name}: ${missing}`,
+          });
+        }
+      });
+    }
+
     const names = new Set<string>();
     for (const model of catalog.models) {
       if (names.has(model.name)) {

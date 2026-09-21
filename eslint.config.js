@@ -61,6 +61,8 @@ export default [
                 // which talk to plain HTTP and WebSocket endpoints.
                 Response: 'readonly',
                 RequestInit: 'readonly',
+                Request: 'readonly',
+                Headers: 'readonly',
                 URLSearchParams: 'readonly',
                 FormData: 'readonly',
                 Blob: 'readonly',

@@ -11,13 +11,17 @@ It deliberately holds nothing about tenants, users, projects, permissions,
 storage or money. If a component needs one of those words, it belongs to the
 application, not here — and a test fails when it creeps in.
 
-> **Status: 0.3.0.** The package includes the catalog with multi-provider
+> **Status: 0.4.0.** The package includes the catalog with multi-provider
 > routes, model-selection policy, provider registries, generation and streaming
 > execution with retries, prompt assembly, cost accounting, ports, error
-> taxonomy, speech-to-text — batch and live — over AssemblyAI, Deepgram and
-> Groq, subtitle rendering, and machine translation over a dedicated engine
-> with a binding glossary and deterministic quality detectors. It is ready for
-> use with a consumer-owned model catalog.
+> taxonomy, speech-to-text — batch and live — over AssemblyAI, Deepgram, Groq
+> and any OpenAI-compatible server, subtitle rendering, and machine translation
+> over a dedicated engine with a binding glossary and deterministic quality
+> detectors. It runs on a server, in a browser and in a Tauri webview.
+>
+> **Upgrading from 0.3:** `Catalog.fromFile` is now `readCatalogFile` from
+> `@bozonx/ai-kit/node`, and every accounting object and `UsageEvent` carries
+> `priced`. See `docs/CHANGELOG.md`.
 
 ## Install
 
@@ -35,7 +39,12 @@ visible without publishing.
 | `@bozonx/ai-kit` | `createAiKit` and everything needed to call it: the catalog, pricing, policy, errors, ports, prompt assembly, tools, chat history compaction, request and result types |
 | `@bozonx/ai-kit/stt` | Speech extras: provider adapters, subtitles, word segmentation, audio helpers (`estimateAudioSeconds`, `SilenceDetector`, `PhraseChunker`, `pcm16ToWav`) |
 | `@bozonx/ai-kit/translate` | Translation extras: the Cloud Translation adapter, parallel text splitting, the binding glossary, the quality detectors |
-| `@bozonx/ai-kit/stream` | The stream-part types and the SSE codec (`encodeSse`, `SseDecoder`), safe to import in a browser |
+| `@bozonx/ai-kit/stream` | The stream-part types and the SSE codec (`encodeSse`, `SseDecoder`) |
+| `@bozonx/ai-kit/node` | What needs Node: `readCatalogFile` and `wsSocketOpener` |
+
+Every entry point except `/node` loads without Node: the network goes through
+the `Transport` port, hashing through Web Crypto, and a test walks the import
+graph of each one to keep it that way. See [Running outside Node](#running-outside-node).
 
 The kit is the way to call a model. The loops underneath it — retry, fallback,
 pricing — are not exported on their own: a consumer that needs something the
@@ -83,11 +92,13 @@ translation engine — it reads that off the models nominated for it, and refuse
 a catalog whose class mixes two kinds.
 
 ```ts
-import { Catalog, calculateCost } from '@bozonx/ai-kit';
+import { calculateCost } from '@bozonx/ai-kit';
+import { readCatalogFile } from '@bozonx/ai-kit/node';
 
 // Throws on a bad price, an unknown model in a task class, a duplicate name.
 // Loudly, at startup — a catalog that is wrong is a bill that is wrong.
-const catalog = Catalog.fromFile('./models.yaml');
+// Outside Node: `Catalog.fromYaml(text)` or `Catalog.fromObject(data)`.
+const catalog = readCatalogFile('./models.yaml');
 
 const model = catalog.require('gemini-2.5-flash');
 const cost = calculateCost(model, {
@@ -102,6 +113,14 @@ const cost = calculateCost(model, {
 `pricing.version` exists so that history stays recomputable after a provider
 changes prices. Record it with every call; without it a re-pricing turns the
 past into numbers nobody can defend.
+
+Every model needs its price block — `pricing`, `sttPricing` or `mtPricing` —
+unless the catalog sets `requirePricing: false`. That is for a catalog nobody
+is billed through: a desktop app on the user's own key, a local model. An
+unpriced call is then recorded with `costMicros: 0`, `priceVersion: 'unpriced'`
+and `priced: false`, and a quote carries `priced: false` too — a bare zero is
+what a free call looks like, and a billing product must be able to tell the two
+apart. Leave it on in anything that charges money.
 
 `tier` is the boundary a fallback may not cross. A premium model quietly
 replaced by a free one is not a degraded answer, it is a different product.
@@ -137,7 +156,8 @@ and never removes it.
 ## Ports
 
 Everything the library needs from the outside arrives through `src/ports.ts`:
-`KeyProvider`, `UsageSink`, `TraceSink`, `AttemptObserver`, `Clock`. All are
+`KeyProvider`, `UsageSink`, `TraceSink`, `AttemptObserver`, `Clock`,
+`Transport`. All are
 optional except keys — a library that cannot be called until five interfaces
 are implemented gets worked around instead of used.
 
@@ -416,17 +436,73 @@ words to fit a request limit.
   system. No model takes part, which is what makes them free to run and
   explainable to whoever is shown the result.
 
+## Running outside Node
+
+`transport` on `createAiKit` is how the kit reaches the network. Either half may
+be given alone; the defaults are the platform's `fetch` and `WebSocket`.
+
+```ts
+import { fetch } from '@tauri-apps/plugin-http';
+
+const kit = createAiKit({
+  catalog: Catalog.fromObject(catalogData),
+  keys: { get: provider => keychain.get(provider) },
+  transport: { fetch },
+});
+```
+
+- **`fetch`** carries every HTTP request — language models through the AI SDK,
+  speech, translation. In a Tauri app, the HTTP plugin's `fetch` gets past the
+  CORS rules a webview would otherwise apply to provider APIs.
+- **`openSocket`** opens live speech sessions. Every speech provider
+  authenticates one with a request header, which Node, Deno and Bun can send
+  through the platform `WebSocket` and a browser cannot. In a browser, pass an
+  opener that can (a Tauri WebSocket plugin, or a proxy of your own); without
+  one, a live session fails with `invalid_request` rather than being retried as
+  an outage. `wsSocketOpener` from `@bozonx/ai-kit/node` is the `ws`-based
+  opener, for a Node host that prefers it.
+- **Keys in a browser are the user's keys.** A `KeyProvider` in a desktop app
+  reads the user's own key from the OS keychain; a key your company pays for
+  has no place in a web page, and nothing here makes that safe.
+- Anthropic refuses browser-origin requests unless told otherwise; through a
+  Tauri HTTP plugin the request is not browser-origin and nothing extra is
+  needed.
+- Web Crypto's `subtle` exists only in a secure context (HTTPS, `localhost`, a
+  Tauri webview), and the client cache hashes keys with it.
+
+### OpenAI-compatible servers and DeepSeek
+
+`openai-compatible` is a built-in provider for any server that speaks OpenAI's
+API — Ollama, LM Studio, vLLM, a company proxy — for chat, embeddings and, in
+the speech registry, `/audio/transcriptions`. It has no default endpoint, so
+the catalog sets `baseUrl`, and it sends no `Authorization` header when the
+`KeyProvider` returns an empty key. `deepseek` is built in as well.
+
+```yaml
+requirePricing: false
+models:
+  - name: local-llama
+    provider: openai-compatible
+    model: llama3.1
+    baseUrl: http://localhost:11434/v1
+    tier: standard
+    contextSize: 131072
+    maxOutputTokens: 4096
+```
+
 ## Installing only what you use
 
 `zod` is a peer dependency, so the schemas you pass and the ones the package
-validates with are the same copy. The provider SDKs and `ws` are optional peer dependencies, loaded the first time
-a route asks for one. A product that only calls OpenAI installs
-`@ai-sdk/openai` and nothing else; one that transcribes files but never dictates
-needs no `ws`. A missing package produces a sentence naming what to install
-rather than a module-resolution stack trace.
+validates with are the same copy. The provider SDKs (`@ai-sdk/google`,
+`@ai-sdk/openai`, `@ai-sdk/anthropic`, `@ai-sdk/deepseek`,
+`@ai-sdk/openai-compatible`, `@openrouter/ai-sdk-provider`) and `ws` are
+optional peer dependencies, loaded the first time a route asks for one. A
+product that only calls OpenAI installs `@ai-sdk/openai` and nothing else; `ws`
+is needed only by `wsSocketOpener`. A missing package produces a sentence
+naming what to install rather than a module-resolution stack trace.
 
-`@bozonx/ai-kit/stream` holds only the stream-part types, so a browser can
-share the wire vocabulary without resolving the Node entry point.
+`@bozonx/ai-kit/stream` holds only the stream-part types and the SSE codec, for
+a page that renders a stream the server produced.
 
 ## Development
 

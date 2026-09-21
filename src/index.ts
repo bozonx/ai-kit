@@ -16,6 +16,11 @@
  * and quality checks — live in `@bozonx/ai-kit/stt` and
  * `@bozonx/ai-kit/translate`; the stream vocabulary and its SSE codec, for a
  * browser, in `@bozonx/ai-kit/stream`.
+ *
+ * Nothing reachable from here needs Node: the network goes through the
+ * `Transport` port and hashing through Web Crypto, so the same kit runs on a
+ * server, in a browser and in a Tauri webview. Reading a catalog file and the
+ * `ws` socket live in `@bozonx/ai-kit/node`.
  */
 
 export { Catalog } from './catalog/catalog.js';
@@ -65,6 +70,7 @@ export {
   estimateSttCost,
   calculateMtCost,
   estimateMtCost,
+  UNPRICED,
 } from './catalog/pricing.js';
 export type {
   CostBreakdown,
@@ -105,7 +111,14 @@ export type {
   UsageEvent,
   GenerationTrace,
   SpanTrace,
+  Transport,
+  FetchFunction,
+  SocketOpener,
+  OpenSocketOptions,
+  SocketSession,
 } from './ports.js';
+
+export { platformFetch, platformSocket } from './transport/platform.js';
 
 export type { KeyOverrides } from './providers/client-cache.js';
 

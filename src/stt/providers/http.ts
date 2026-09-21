@@ -1,5 +1,7 @@
 import { AiError } from '../../errors.js';
 import { kindFromStatus } from '../../execute/classify.js';
+import type { FetchFunction } from '../../ports.js';
+import { platformFetch } from '../../transport/platform.js';
 import type { TranscriptSegment, WordTiming } from '../types.js';
 
 /**
@@ -19,14 +21,22 @@ export interface HttpContext {
 }
 
 /** A request whose failures are already in the vocabulary the retry loop reads. */
-export async function requestJson<T>(
+export type JsonRequest = <T>(url: string, init: RequestInit, context: HttpContext) => Promise<T>;
+
+/** `JsonRequest` over the host's `fetch`, or the platform's when it supplied none. */
+export function jsonRequester(send: FetchFunction = platformFetch): JsonRequest {
+  return (url, init, context) => requestJson(send, url, init, context);
+}
+
+async function requestJson<T>(
+  send: FetchFunction,
   url: string,
   init: RequestInit,
   context: HttpContext,
 ): Promise<T> {
   let response: Response;
   try {
-    response = await fetch(url, init);
+    response = await send(url, init);
   } catch (cause) {
     if (isAbort(cause)) throw cause;
     throw new AiError('provider_unavailable', `${context.provider} is unreachable`, {

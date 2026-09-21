@@ -7,6 +7,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-21
+
+The package runs outside Node: in a browser and in a Tauri webview, as well as
+on a server.
+
+### Changed — breaking
+
+- **`Catalog.fromFile` moved to `@bozonx/ai-kit/node` as `readCatalogFile`.**
+  It was the one reason the main entry point imported `node:fs`. `fromYaml` and
+  `fromObject` stay where they were.
+- **Every accounting object carries `priced`** — `CallAccounting` (and so the
+  stream's `usage` part), `EmbedAccounting`, `SttAccounting`, `MtAccounting`,
+  `UsageEvent` and `CandidateQuote`. It is `true` for every call in a catalog
+  that requires prices, which is the default.
+- **`SocketSession.close(payload)` leaves the closing to the server.** With a
+  payload — a provider's end-of-stream message — it sends it and waits for the
+  server to flush and close, cutting it off after five seconds. It used to
+  close at once, which only worked because `ws` keeps delivering frames on a
+  closing socket; the platform `WebSocket` drops them.
+
+### Added
+
+- **`Transport` port** (`fetch`, `openSocket`) and `transport` on
+  `createAiKit`. Every HTTP request — the AI SDK providers, speech, translation
+  — goes through `fetch`; live speech through `openSocket`. Defaults:
+  `platformFetch` and `platformSocket`, both exported. Adapter factories
+  (`ProviderFactory`, `SttProviderFactory`, `TranslationProviderFactory`)
+  receive the transport, optionally, so custom adapters can use it too.
+- **`@bozonx/ai-kit/node`** with `readCatalogFile` and `wsSocketOpener`.
+- **`openai-compatible` provider** for chat and embeddings (Ollama, LM Studio,
+  vLLM, proxies) and for speech (`/audio/transcriptions`). Requires `baseUrl`;
+  sends no `Authorization` header for an empty key. `openAiCompatibleSttAdapter`
+  builds presets; Groq is now one.
+- **`deepseek` provider** through `@ai-sdk/deepseek`.
+- **`requirePricing` in the catalog**, `true` by default. Set to `false`, a
+  model may have no price block; its calls record `costMicros: 0`,
+  `priceVersion: 'unpriced'` (`UNPRICED`) and `priced: false`, and a budget
+  never excludes it. `Catalog#requiresPricing` reports the setting.
+- `test/invariants.spec.ts` walks the import graph of every entry point except
+  `/node` and fails on `node:*`, `ws` or Node globals.
+
+### Changed
+
+- The platform `WebSocket` replaces `ws` as the default live-session socket.
+  Node 22+, Deno and Bun send headers through it; a browser gets an
+  `invalid_request` naming `transport.openSocket` instead of a retried outage.
+- The client cache hashes keys with Web Crypto instead of `node:crypto`.
+- `@ai-sdk/deepseek` and `@ai-sdk/openai-compatible` are new optional peer
+  dependencies.
+
 ## [0.3.0] - 2026-09-20
 
 The release that makes the package usable by a second product. Three of the

@@ -30,6 +30,14 @@ export interface PricedMt {
   mtPricing?: MtPricing;
 }
 
+/**
+ * The price version recorded for a call whose route carries no price.
+ *
+ * Only reachable in a catalog with `requirePricing: false`, and always next to
+ * `priced: false` — a zero cost on its own would read as a free call.
+ */
+export const UNPRICED = 'unpriced';
+
 function label(priced: { name?: string; provider?: string }): string {
   if (priced.name && priced.provider) return `"${priced.name}" at "${priced.provider}"`;
   return priced.name ? `"${priced.name}"` : 'this route';

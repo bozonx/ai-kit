@@ -38,6 +38,11 @@ export interface CandidateQuote {
   candidate: ModelCandidate;
   /** Upper estimate for this candidate, in micro-units of the currency. */
   costMicros: number;
+  /**
+   * False when the route carries no price, and `costMicros` is zero because
+   * the cost is unknown. Only a catalog with `requirePricing: false` has these.
+   */
+  priced: boolean;
 }
 
 /**
@@ -71,7 +76,20 @@ export function quoteCandidates(
   return selectCandidates(input, catalog).map(candidate => ({
     candidate,
     costMicros: quoteCandidate(candidate, input, usage),
+    priced: isPriced(candidate),
   }));
+}
+
+/** Whether the candidate's route carries the price block its kind is billed by. */
+export function isPriced({ model, route }: ModelCandidate): boolean {
+  switch (model.kind) {
+    case 'stt':
+      return route.sttPricing !== undefined;
+    case 'mt':
+      return route.mtPricing !== undefined;
+    default:
+      return route.pricing !== undefined;
+  }
 }
 
 /** Worst-case cost of one candidate already selected. Internal to the package. */

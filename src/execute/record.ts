@@ -1,3 +1,4 @@
+import { UNPRICED } from '../catalog/pricing.js';
 import { callStatusFor, type AiError } from '../errors.js';
 import type { ModelCandidate } from '../policy/policy.js';
 import type {
@@ -103,6 +104,7 @@ export async function recordFailure(
   const { candidate, error } = params;
   const route = candidate.route;
   const routeId = route.id;
+  const price = route.pricing ?? route.sttPricing ?? route.mtPricing;
   await recordCall(deps, {
     name: params.name,
     event: {
@@ -114,11 +116,8 @@ export async function recordFailure(
       audioSeconds: 0,
       characters: 0,
       costMicros: 0,
-      priceVersion:
-        route.pricing?.version ??
-        route.sttPricing?.version ??
-        route.mtPricing?.version ??
-        'unpriced',
+      priceVersion: price?.version ?? UNPRICED,
+      priced: price !== undefined,
       status: callStatusFor(error.kind),
       latencyMs: params.latencyMs,
       attempts: params.attempts,

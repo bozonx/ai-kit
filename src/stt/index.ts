@@ -10,6 +10,14 @@
 export { assemblyAiSttProvider } from './providers/assemblyai.js';
 export { deepgramSttProvider } from './providers/deepgram.js';
 export { groqSttProvider } from './providers/groq.js';
+export {
+  openAiCompatibleSttAdapter,
+  openAiCompatibleSttProvider,
+} from './providers/openai-compatible.js';
+export type {
+  OpenAiCompatibleSttPreset,
+  VerboseTranscription,
+} from './providers/openai-compatible.js';
 
 export type {
   SttProvider,

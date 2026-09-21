@@ -7,7 +7,11 @@
 
 - Node.js: version 22, package manager `pnpm`
 - Library source: `src/`. Public entry points: `src/index.ts` (the kit), `src/stt/index.ts`,
-  `src/translate/index.ts`, `src/stream/index.ts` — mirrored in `exports` of `package.json`
+  `src/translate/index.ts`, `src/stream/index.ts`, `src/node/index.ts` — mirrored in `exports`
+  of `package.json`
+- Every entry point except `src/node/` must load in a browser: no `node:*`, no `ws`, no Node
+  globals, network only through the `Transport` port. `test/invariants.spec.ts` walks the import
+  graph of each entry point and fails otherwise; Node-only code goes to `src/node/`.
 - Tests: `test/`, run with `pnpm test`
 - `README.md` at the root (it ships with the package), other guides in `docs/`,
   work-in-progress plans in `dev_docs/`

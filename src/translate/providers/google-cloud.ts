@@ -1,5 +1,7 @@
 import { AiError } from '../../errors.js';
 import { kindFromStatus } from '../../execute/classify.js';
+import type { FetchFunction } from '../../ports.js';
+import { platformFetch } from '../../transport/platform.js';
 import type {
   ProviderTranslateRequest,
   TranslationProvider,
@@ -22,13 +24,18 @@ interface GoogleCloudResponse {
 const DEFAULT_ENDPOINT = 'https://translation.googleapis.com/language/translate/v2';
 const PROVIDER = 'google';
 
-export const googleCloudTranslationProvider: TranslationProviderFactory = ({ apiKey, baseUrl }) =>
-  new GoogleCloudTranslationProvider(apiKey, baseUrl ?? DEFAULT_ENDPOINT);
+export const googleCloudTranslationProvider: TranslationProviderFactory = ({
+  apiKey,
+  baseUrl,
+  fetch,
+}) =>
+  new GoogleCloudTranslationProvider(apiKey, baseUrl ?? DEFAULT_ENDPOINT, fetch ?? platformFetch);
 
 class GoogleCloudTranslationProvider implements TranslationProvider {
   constructor(
     private readonly apiKey: string,
     private readonly endpoint: string,
+    private readonly send: FetchFunction,
   ) {}
 
   public async translate(request: ProviderTranslateRequest): Promise<TranslationResult> {
@@ -38,7 +45,7 @@ class GoogleCloudTranslationProvider implements TranslationProvider {
 
     let response: Response;
     try {
-      response = await fetch(`${this.endpoint}?key=${encodeURIComponent(this.apiKey)}`, {
+      response = await this.send(`${this.endpoint}?key=${encodeURIComponent(this.apiKey)}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

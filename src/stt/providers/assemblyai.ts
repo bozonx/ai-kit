@@ -9,7 +9,7 @@ import type {
   TranscriptionResult,
   WordTiming,
 } from '../types.js';
-import { requestJson, segmentsFromWords, sleep } from './http.js';
+import { jsonRequester, segmentsFromWords, sleep } from './http.js';
 import { openSocket } from './socket.js';
 
 /**
@@ -61,7 +61,13 @@ interface TurnMessage {
   words?: Array<{ start: number; end: number; text: string; confidence?: number }>;
 }
 
-export const assemblyAiSttProvider: SttProviderFactory = ({ apiKey, baseUrl }) => {
+export const assemblyAiSttProvider: SttProviderFactory = ({
+  apiKey,
+  baseUrl,
+  fetch,
+  openSocket: socketOpener,
+}) => {
+  const requestJson = jsonRequester(fetch);
   const base = (baseUrl ?? DEFAULT_BASE_URL).replace(/\/$/, '');
   const authorization = { authorization: apiKey };
 
@@ -179,6 +185,7 @@ export const assemblyAiSttProvider: SttProviderFactory = ({ apiKey, baseUrl }) =
         headers: authorization,
         signal: request.signal,
         context,
+        openSocket: socketOpener,
       });
 
       // Pumping audio is a separate task from reading results: a session that

@@ -1,7 +1,7 @@
 import { embedMany } from 'ai';
 
 import type { Catalog } from '../catalog/catalog.js';
-import { calculateCost, estimateTokens } from '../catalog/pricing.js';
+import { calculateCost, estimateTokens, UNPRICED } from '../catalog/pricing.js';
 import { AiError } from '../errors.js';
 import {
   candidatePolicyOf,
@@ -56,6 +56,8 @@ export interface EmbedAccounting {
   tokens: number;
   costMicros: number;
   priceVersion: string;
+  /** False when the model has no price; see `CallAccounting.priced`. */
+  priced: boolean;
   attempts: number;
   latencyMs: number;
 }
@@ -132,22 +134,22 @@ function priceIt(
   attempts: number,
   latencyMs: number,
 ): EmbedAccounting {
-  const cost = calculateCost(
-    {
-      name: candidate.model.name,
-      provider: candidate.route.provider,
-      ...(candidate.route.pricing === undefined ? {} : { pricing: candidate.route.pricing }),
-    },
-    { inputTokens: tokens, outputTokens: 0, cachedInputTokens: 0, reasoningTokens: 0 },
-  );
+  const pricing = candidate.route.pricing;
+  const cost = pricing
+    ? calculateCost(
+        { name: candidate.model.name, provider: candidate.route.provider, pricing },
+        { inputTokens: tokens, outputTokens: 0, cachedInputTokens: 0, reasoningTokens: 0 },
+      )
+    : undefined;
   return {
     provider: candidate.route.provider,
     model: candidate.model.name,
     ...(candidate.route.id === undefined ? {} : { routeId: candidate.route.id }),
     routedBy: candidate.routedBy,
     tokens,
-    costMicros: cost.totalMicros,
-    priceVersion: cost.priceVersion,
+    costMicros: cost?.totalMicros ?? 0,
+    priceVersion: cost?.priceVersion ?? UNPRICED,
+    priced: cost !== undefined,
     attempts,
     latencyMs,
   };
@@ -177,6 +179,7 @@ function record(
       characters: 0,
       costMicros: data.costMicros,
       priceVersion: data.priceVersion,
+      priced: data.priced,
       status,
       latencyMs: data.latencyMs,
       attempts: data.attempts,

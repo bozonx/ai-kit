@@ -1,7 +1,7 @@
 import type { ResolvedRoute } from '../catalog/catalog.js';
 import type { ModelDefinition } from '../catalog/schema.js';
 import { AiError } from '../errors.js';
-import type { KeyProvider } from '../ports.js';
+import type { KeyProvider, Transport } from '../ports.js';
 import { ClientCache, keyFor, type KeyOverrides } from '../providers/client-cache.js';
 import { googleCloudTranslationProvider } from './providers/google-cloud.js';
 import type { TranslationProvider, TranslationProviderFactory } from './types.js';
@@ -20,17 +20,21 @@ const BUILTIN_FACTORIES: Readonly<Record<string, TranslationProviderFactory>> = 
 
 export interface MtRegistryOptions {
   keys: KeyProvider;
+  /** Handed to every adapter. Omitted means the platform's own network. */
+  transport?: Transport;
   /** Extra or replacement adapters, by provider id. */
   factories?: Record<string, TranslationProviderFactory>;
 }
 
 export class MtProviderRegistry {
   private readonly keys: KeyProvider;
+  private readonly transport: Transport | undefined;
   private readonly factories: Readonly<Record<string, TranslationProviderFactory>>;
   private readonly cache = new ClientCache<TranslationProvider>();
 
   constructor(options: MtRegistryOptions) {
     this.keys = options.keys;
+    this.transport = options.transport;
     this.factories = { ...BUILTIN_FACTORIES, ...options.factories };
   }
 
@@ -64,6 +68,7 @@ export class MtProviderRegistry {
         factory({
           apiKey,
           ...(route.baseUrl === undefined ? {} : { baseUrl: route.baseUrl }),
+          ...(this.transport === undefined ? {} : { fetch: this.transport.fetch }),
         }),
     );
   }

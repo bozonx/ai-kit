@@ -63,6 +63,58 @@ export interface AttemptFailure {
   message: string;
 }
 
+/**
+ * How the library reaches the network.
+ *
+ * A port because "the network" is not the same thing everywhere the package
+ * runs. A browser page is stopped by CORS, a Tauri webview has to go through
+ * its HTTP plugin, a server may want a proxy or a recording fetch in tests —
+ * and the standard WebSocket has nowhere to put the header every speech
+ * provider authenticates a live session with. The defaults are the platform's
+ * own `fetch` and `WebSocket`; everything else is a host's decision.
+ */
+export interface Transport {
+  /** Every HTTP request: language models through the AI SDK, speech, translation. */
+  fetch: FetchFunction;
+  /** Live speech sessions. */
+  openSocket: SocketOpener;
+}
+
+/** The standard `fetch` signature, which is what every implementation offers. */
+export type FetchFunction = typeof globalThis.fetch;
+
+/**
+ * Opens a WebSocket and resolves once it is open.
+ *
+ * The contract an implementation has to keep, and nothing more: reject when
+ * the socket cannot be opened, end `messages` when the server closes normally
+ * (1000 or 1005), throw from it when the session was cut short, and close the
+ * socket when `signal` aborts. The library turns every failure into an
+ * `AiError` with the provider named, so an implementation throws plain errors.
+ */
+export type SocketOpener = (url: string, options: OpenSocketOptions) => Promise<SocketSession>;
+
+export interface OpenSocketOptions {
+  /** Request headers for the handshake. Most speech providers authenticate here. */
+  headers?: Record<string, string>;
+  protocols?: string[];
+  signal: AbortSignal;
+}
+
+/** A WebSocket in the shape the streaming adapters want. */
+export interface SocketSession {
+  /** Text frames, in arrival order. Ends when the socket closes. */
+  messages: AsyncIterable<string>;
+  send(data: Uint8Array | string): void;
+  /**
+   * Without a payload, closes the socket now. With one — a provider's "end of
+   * stream" message — sends it and leaves the closing to the server, which
+   * flushes the words it still owes first; a server that never closes is cut
+   * off after a grace period. Safe to call more than once.
+   */
+  close(payload?: string): void;
+}
+
 /** Injectable time, so that retry and cooldown logic is testable. */
 export interface Clock {
   now(): number;
@@ -100,6 +152,12 @@ export interface CallAccounting {
   usage: TokenUsage;
   costMicros: number;
   priceVersion: string;
+  /**
+   * False when the route that answered has no price, which only a catalog
+   * with `requirePricing: false` allows. `costMicros` is then zero because
+   * nobody knows the cost, not because the call was free.
+   */
+  priced: boolean;
   /** Provider requests made, retries and fallbacks included. */
   attempts: number;
   latencyMs: number;
@@ -133,6 +191,8 @@ export interface UsageEvent {
   /** What the call cost us, in micro-units of the currency. 1_000_000 = 1 USD. */
   costMicros: number;
   priceVersion: string;
+  /** False when the route has no price; see `CallAccounting.priced`. */
+  priced: boolean;
   status: CallStatus;
   latencyMs: number;
   /** How many provider requests it took, including retries and fallbacks. */

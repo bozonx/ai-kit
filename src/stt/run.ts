@@ -1,5 +1,5 @@
 import type { Catalog } from '../catalog/catalog.js';
-import { calculateSttCost } from '../catalog/pricing.js';
+import { calculateSttCost, UNPRICED } from '../catalog/pricing.js';
 import { AiError, callStatusFor } from '../errors.js';
 import { attemptCandidates, type AttemptDeps, type AttemptRequest } from '../execute/attempt.js';
 import { classifyError } from '../execute/classify.js';
@@ -10,7 +10,7 @@ import {
   type CandidatePolicy,
   type ModelCandidate,
 } from '../policy/policy.js';
-import { quoteCandidate, type CandidatePlan } from '../policy/quote.js';
+import { isPriced, quoteCandidate, type CandidatePlan } from '../policy/quote.js';
 import type { CallStatus, UsageSink } from '../ports.js';
 import { assertSttCapabilities } from './policy.js';
 import type { SttProviderRegistry } from './registry.js';
@@ -114,6 +114,7 @@ export function planTranscribe(
     candidates,
     quotes: candidates.map(candidate => ({
       candidate,
+      priced: isPriced(candidate),
       costMicros: quoteCandidate(candidate, input, {
         audioSeconds: usage.audioSeconds,
         realtime,
@@ -152,6 +153,7 @@ function record(
       characters: 0,
       costMicros: data.costMicros,
       priceVersion: data.priceVersion,
+      priced: data.priced,
       status,
       latencyMs: data.latencyMs,
       attempts: data.attempts,
@@ -169,28 +171,22 @@ function priceIt(
   attempts: number,
   latencyMs: number,
 ): SttAccounting {
-  const cost = calculateSttCost(
-    {
-      name: candidate.model.name,
-      provider: candidate.route.provider,
-      ...(candidate.route.sttPricing === undefined
-        ? {}
-        : { sttPricing: candidate.route.sttPricing }),
-    },
-    {
-      audioSeconds,
-      realtime,
-      diarization: options.diarization,
-    },
-  );
+  const sttPricing = candidate.route.sttPricing;
+  const cost = sttPricing
+    ? calculateSttCost(
+        { name: candidate.model.name, provider: candidate.route.provider, sttPricing },
+        { audioSeconds, realtime, diarization: options.diarization },
+      )
+    : undefined;
   return {
     provider: candidate.route.provider,
     model: candidate.model.name,
     ...(candidate.route.id === undefined ? {} : { routeId: candidate.route.id }),
     routedBy: candidate.routedBy,
-    audioSeconds: cost.billedSeconds,
-    costMicros: cost.totalMicros,
-    priceVersion: cost.priceVersion,
+    audioSeconds: cost?.billedSeconds ?? audioSeconds,
+    costMicros: cost?.totalMicros ?? 0,
+    priceVersion: cost?.priceVersion ?? UNPRICED,
+    priced: cost !== undefined,
     attempts,
     latencyMs,
   };

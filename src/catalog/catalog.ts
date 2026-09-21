@@ -1,4 +1,3 @@
-import { readFileSync } from 'node:fs';
 import { load as parseYaml } from 'js-yaml';
 
 import { CatalogError } from '../errors.js';
@@ -87,17 +86,6 @@ export class Catalog {
     return Catalog.fromObject(parsed);
   }
 
-  /** Reads, parses and validates a YAML file. */
-  public static fromFile(path: string): Catalog {
-    let text: string;
-    try {
-      text = readFileSync(path, 'utf8');
-    } catch (error) {
-      throw new CatalogError(`Cannot read model catalog at ${path}`, { cause: error });
-    }
-    return Catalog.fromYaml(text);
-  }
-
   public get models(): readonly ModelDefinition[] {
     return this.data.models;
   }
@@ -162,6 +150,11 @@ export class Catalog {
    */
   public toData(): CatalogData {
     return structuredClone(this.data);
+  }
+
+  /** Whether every model had to carry a price to be accepted. See `requirePricing`. */
+  public get requiresPricing(): boolean {
+    return this.data.requirePricing;
   }
 
   /** Task classes the catalog has an opinion about. */

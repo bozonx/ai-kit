@@ -1,5 +1,5 @@
 import type { AiErrorKind } from '../errors.js';
-import type { RoutedBy } from '../ports.js';
+import type { FetchFunction, RoutedBy, SocketOpener } from '../ports.js';
 
 /**
  * The vocabulary of speech-to-text.
@@ -125,6 +125,9 @@ export type SttProviderFactory = (init: {
   apiKey: string;
   /** Set when the catalog points the model at a non-default endpoint. */
   baseUrl?: string;
+  /** The kit's transport. Absent when an adapter is built by hand: use the platform's. */
+  fetch?: FetchFunction;
+  openSocket?: SocketOpener;
 }) => SttProvider;
 
 /**
@@ -167,6 +170,8 @@ export interface SttAccounting {
   audioSeconds: number;
   costMicros: number;
   priceVersion: string;
+  /** False when the model has no price; see `CallAccounting.priced`. */
+  priced: boolean;
   attempts: number;
   latencyMs: number;
 }

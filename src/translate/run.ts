@@ -1,5 +1,5 @@
 import type { Catalog } from '../catalog/catalog.js';
-import { calculateMtCost } from '../catalog/pricing.js';
+import { calculateMtCost, UNPRICED } from '../catalog/pricing.js';
 import { AiError } from '../errors.js';
 import { attemptCandidates, type AttemptDeps, type AttemptRequest } from '../execute/attempt.js';
 import { NO_TOKENS, recordCall } from '../execute/record.js';
@@ -9,7 +9,7 @@ import {
   type CandidatePolicy,
   type ModelCandidate,
 } from '../policy/policy.js';
-import { quoteCandidate, type CandidatePlan } from '../policy/quote.js';
+import { isPriced, quoteCandidate, type CandidatePlan } from '../policy/quote.js';
 import type { CallStatus, RoutedBy, UsageSink } from '../ports.js';
 import type { MtProviderRegistry } from './registry.js';
 import type { TranslationFormat, TranslationResult } from './types.js';
@@ -58,6 +58,8 @@ export interface MtAccounting {
   characters: number;
   costMicros: number;
   priceVersion: string;
+  /** False when the engine has no price; see `CallAccounting.priced`. */
+  priced: boolean;
   attempts: number;
   latencyMs: number;
 }
@@ -104,6 +106,7 @@ export function planTranslate(
     candidates,
     quotes: candidates.map(candidate => ({
       candidate,
+      priced: isPriced(candidate),
       costMicros: quoteCandidate(candidate, policy, { characters }),
     })),
   };
@@ -115,22 +118,22 @@ function priceIt(
   attempts: number,
   latencyMs: number,
 ): MtAccounting {
-  const cost = calculateMtCost(
-    {
-      name: candidate.model.name,
-      provider: candidate.route.provider,
-      ...(candidate.route.mtPricing === undefined ? {} : { mtPricing: candidate.route.mtPricing }),
-    },
-    { characters },
-  );
+  const mtPricing = candidate.route.mtPricing;
+  const cost = mtPricing
+    ? calculateMtCost(
+        { name: candidate.model.name, provider: candidate.route.provider, mtPricing },
+        { characters },
+      )
+    : undefined;
   return {
     provider: candidate.route.provider,
     model: candidate.model.name,
     ...(candidate.route.id === undefined ? {} : { routeId: candidate.route.id }),
     routedBy: candidate.routedBy,
-    characters: cost.billedCharacters,
-    costMicros: cost.totalMicros,
-    priceVersion: cost.priceVersion,
+    characters: cost?.billedCharacters ?? characters,
+    costMicros: cost?.totalMicros ?? 0,
+    priceVersion: cost?.priceVersion ?? UNPRICED,
+    priced: cost !== undefined,
     attempts,
     latencyMs,
   };
@@ -154,6 +157,7 @@ function record(
       characters: data.characters,
       costMicros: data.costMicros,
       priceVersion: data.priceVersion,
+      priced: data.priced,
       status,
       latencyMs: data.latencyMs,
       attempts: data.attempts,

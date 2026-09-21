@@ -5,6 +5,7 @@ import { describe, it, expect } from '@jest/globals';
 
 import { Catalog } from '../src/catalog/catalog.js';
 import { CatalogError } from '../src/errors.js';
+import { readCatalogFile } from '../src/node/catalog.js';
 
 const minimal = `
 models:
@@ -110,6 +111,12 @@ describe('the example catalog', () => {
   it('is valid, because it is the first thing a new consumer copies', () => {
     const path = fileURLToPath(new URL('../models.example.yaml', import.meta.url));
 
-    expect(() => Catalog.fromFile(path)).not.toThrow();
+    expect(() => readCatalogFile(path)).not.toThrow();
+  });
+
+  it('is read from disk through the Node entry point, naming the path when it is missing', () => {
+    expect(() => readCatalogFile('/nonexistent/models.yaml')).toThrow(
+      /Cannot read model catalog at \/nonexistent\/models.yaml/,
+    );
   });
 });

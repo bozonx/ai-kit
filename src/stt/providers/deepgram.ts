@@ -9,7 +9,7 @@ import type {
   TranscriptionResult,
   WordTiming,
 } from '../types.js';
-import { requestJson, segmentsFromWords } from './http.js';
+import { jsonRequester, segmentsFromWords } from './http.js';
 import { openSocket } from './socket.js';
 
 /**
@@ -76,7 +76,13 @@ function queryFor(
   return query;
 }
 
-export const deepgramSttProvider: SttProviderFactory = ({ apiKey, baseUrl }) => {
+export const deepgramSttProvider: SttProviderFactory = ({
+  apiKey,
+  baseUrl,
+  fetch,
+  openSocket: socketOpener,
+}) => {
+  const requestJson = jsonRequester(fetch);
   const base = (baseUrl ?? DEFAULT_BASE_URL).replace(/\/$/, '');
   const authorization = { authorization: `Token ${apiKey}` };
 
@@ -148,7 +154,7 @@ export const deepgramSttProvider: SttProviderFactory = ({ apiKey, baseUrl }) => 
 
       const session = await openSocket(
         `${(baseUrl ?? DEFAULT_STREAMING_URL).replace(/\/$/, '')}/v1/listen?${query.toString()}`,
-        { headers: authorization, signal: request.signal, context },
+        { headers: authorization, signal: request.signal, context, openSocket: socketOpener },
       );
 
       const pump = (async () => {

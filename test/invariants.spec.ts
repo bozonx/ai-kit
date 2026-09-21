@@ -1,5 +1,6 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { builtinModules } from 'node:module';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { describe, it, expect } from '@jest/globals';
@@ -77,3 +78,71 @@ describe('library invariants', () => {
     expect(offenders.map(file => file.path)).toEqual([]);
   });
 });
+
+/**
+ * Every module a bundler would pull in from one entry point, with the bare
+ * specifiers they import at runtime.
+ *
+ * Type-only imports are skipped because they are erased at compile time; a
+ * dynamic `import()` is followed like a static one, because a bundler follows it.
+ */
+function runtimeGraph(entry: string): { modules: string[]; externals: Map<string, string> } {
+  const modules = new Set<string>();
+  const externals = new Map<string, string>();
+  const pending = [join(SRC, entry)];
+
+  while (pending.length > 0) {
+    const path = pending.pop();
+    if (path === undefined || modules.has(path)) continue;
+    modules.add(path);
+
+    const text = readFileSync(path, 'utf8');
+    const specifiers = [
+      ...text.matchAll(/^\s*(?:import|export)\s+(?!type\b)[^'";]*?from\s+'([^']+)'/gm),
+      ...text.matchAll(/^\s*import\s+'([^']+)'/gm),
+      ...text.matchAll(/\bimport\(\s*'([^']+)'\s*\)/g),
+    ].map(match => match[1] ?? '');
+
+    for (const specifier of specifiers) {
+      if (specifier.startsWith('.')) {
+        pending.push(resolve(dirname(path), specifier.replace(/\.js$/, '.ts')));
+      } else {
+        externals.set(specifier, path.slice(SRC.length + 1));
+      }
+    }
+  }
+
+  return { modules: [...modules], externals };
+}
+
+const NODE_ONLY = new Set([...builtinModules, 'ws']);
+
+describe.each(['index.ts', 'stt/index.ts', 'translate/index.ts', 'stream/index.ts'])(
+  'the entry point %s',
+  entry => {
+    const graph = runtimeGraph(entry);
+
+    it('loads without Node, so that a browser or a Tauri webview can bundle it', () => {
+      // Whoever trips this moves the Node-only piece to `src/node/` and exports
+      // it from `@bozonx/ai-kit/node`, or puts it behind the `Transport` port.
+      const offenders = [...graph.externals]
+        .filter(([specifier]) => specifier.startsWith('node:') || NODE_ONLY.has(specifier))
+        .map(([specifier, from]) => `${from} imports ${specifier}`);
+
+      expect(offenders).toEqual([]);
+    });
+
+    it('uses no Node globals', () => {
+      const offenders = graph.modules
+        .filter(path => {
+          const code = readFileSync(path, 'utf8')
+            .replace(/\/\*[\s\S]*?\*\//g, '')
+            .replace(/\/\/.*$/gm, '');
+          return /\bBuffer\.|\bprocess\.|\b__dirname\b|(?:^|[=(;,])\s*require\(/m.test(code);
+        })
+        .map(path => path.slice(SRC.length + 1));
+
+      expect(offenders).toEqual([]);
+    });
+  },
+);
