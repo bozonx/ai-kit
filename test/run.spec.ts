@@ -346,3 +346,116 @@ describe('stream', () => {
     expect(recorded[0]?.costMicros).toBeGreaterThan(0);
   });
 });
+
+describe('falling back to another route of the same model', () => {
+  const routed = Catalog.fromYaml(`
+models:
+  - name: writer
+    provider: fake
+    model: writer-aggregated
+    routeId: writer-aggregated
+    tier: standard
+    contextSize: 100000
+    maxOutputTokens: 4096
+    pricing:
+      version: 'aggregated'
+      inputPerMTok: 2000000
+      outputPerMTok: 4000000
+    routes:
+      - id: writer-direct
+        provider: other
+        model: writer-direct
+        priority: 10
+        pricing:
+          version: 'direct'
+          inputPerMTok: 1000000
+          outputPerMTok: 2000000
+taskClasses:
+  chat_simple: [writer]
+`);
+
+  it('tries the second provider of the same model and bills at its price', async () => {
+    const events: UsageEvent[] = [];
+    const { factory, calls } = fakeProvider({
+      doGenerate: modelId => {
+        if (modelId === 'writer-aggregated') throw apiError(503);
+        return {
+          content: [{ type: 'text', text: 'ok' }],
+          finishReason: 'stop',
+          usage,
+          warnings: [],
+        };
+      },
+    });
+
+    const kit = createAiKit({
+      catalog: routed,
+      keys: { get: () => Promise.resolve('key') },
+      usage: {
+        record: event => {
+          events.push(event);
+          return Promise.resolve();
+        },
+      },
+      providers: { fake: factory, other: factory },
+    });
+
+    const result = await kit.generate({
+      policy: {
+        mode: 'manual',
+        taskClass: 'chat_simple',
+        requestedModel: 'writer',
+        signals: { estimatedInputTokens: 10 },
+      },
+      messages: [{ role: 'user', content: 'hi' }],
+    });
+
+    // The model the caller pinned is the model that answered; only the way to
+    // it changed.
+    expect(result.model).toBe('writer');
+    expect(result.provider).toBe('other');
+    expect(result.routeId).toBe('writer-direct');
+    expect(result.priceVersion).toBe('direct');
+    expect(calls).toContain('writer-direct');
+    expect(events[0]).toMatchObject({ routeId: 'writer-direct', priceVersion: 'direct' });
+  });
+
+  it('names the route that answered in the first stream part', async () => {
+    const { factory } = fakeProvider({
+      doStream: modelId => {
+        if (modelId === 'writer-aggregated') throw apiError(503);
+        return {
+          stream: new ReadableStream({
+            start(controller) {
+              controller.enqueue({ type: 'text-start', id: '1' });
+              controller.enqueue({ type: 'text-delta', id: '1', delta: 'hi' });
+              controller.enqueue({ type: 'finish', finishReason: 'stop', usage });
+              controller.close();
+            },
+          }),
+        };
+      },
+    });
+
+    const kit = createAiKit({
+      catalog: routed,
+      keys: { get: () => Promise.resolve('key') },
+      providers: { fake: factory, other: factory },
+    });
+
+    const parts: StreamPart[] = [];
+    for await (const part of kit.stream({
+      policy: {
+        mode: 'manual',
+        taskClass: 'chat_simple',
+        requestedModel: 'writer',
+        signals: { estimatedInputTokens: 10 },
+      },
+      messages: [{ role: 'user', content: 'hi' }],
+    })) {
+      parts.push(part);
+    }
+
+    expect(parts[0]).toMatchObject({ type: 'model', model: 'writer', routeId: 'writer-direct' });
+  });
+});

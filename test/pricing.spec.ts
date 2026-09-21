@@ -26,6 +26,7 @@ const model = (overrides: Partial<ModelDefinition['pricing']> = {}): ModelDefini
     outputPerMTok: 2_500_000,
     ...overrides,
   },
+  routes: [],
   weight: 1,
   available: true,
   tags: [],

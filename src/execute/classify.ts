@@ -29,11 +29,21 @@ const CONNECTION_CODES = new Set([
   'UND_ERR_HEADERS_TIMEOUT',
 ]);
 
-function kindFromStatus(status: number, message: string): AiErrorKind {
+/**
+ * An HTTP status, in the vocabulary the retry loop reads.
+ *
+ * Shared with the speech adapters, which talk plain HTTP rather than going
+ * through the AI SDK. It used to be written twice, and the two copies had
+ * already drifted — one of them knew that 404 and 422 mean a bad request and
+ * the other did not, so the same mistake was retried three times against one
+ * kind of provider and refused immediately by another.
+ */
+export function kindFromStatus(status: number, message = ''): AiErrorKind {
   if (status === 429) return 'rate_limit';
   if (status === 401 || status === 403) return 'auth';
   if (status >= 500) return 'provider_unavailable';
   if (status === 408 || status === 409) return 'provider_unavailable';
+  if (status === 404 || status === 422) return 'invalid_request';
   if (status === 400) {
     const text = message.toLowerCase();
     if (text.includes('context') && text.includes('length')) return 'context_length';

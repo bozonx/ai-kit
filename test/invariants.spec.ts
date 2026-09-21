@@ -57,6 +57,20 @@ describe('library invariants', () => {
     expect(offenders).toEqual([]);
   });
 
+  it("knows no product's names for its own kinds of work", () => {
+    // Task classes used to be a closed list in the schema, and the list held
+    // `generate_post`, `alt_text` and `subtitles` — one product's vocabulary,
+    // shipped inside a library that claims to know nothing about anybody's
+    // domain. A second product could then fork the package or call its ticket
+    // triage `rewrite`. The class is a free string now, and this is what stops
+    // the list from growing back one convenient constant at a time.
+    const forbidden =
+      /'(generate_post|alt_text|bulk_plan|chat_simple|chat_agentic|dictation|subtitles|rewrite|summarize)'/;
+    const offenders = files.filter(file => forbidden.test(file.text)).map(file => file.path);
+
+    expect(offenders).toEqual([]);
+  });
+
   it('does not log by itself', () => {
     const offenders = files.filter(file => /console\.(log|info|warn|error)/.test(file.text));
 

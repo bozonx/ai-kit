@@ -1,6 +1,39 @@
 import type { TokenUsage } from '../ports.js';
 import { CatalogError } from '../errors.js';
-import type { ModelDefinition } from './schema.js';
+import type { ModelPricing, MtPricing, SttPricing } from './schema.js';
+
+/**
+ * Anything that carries a price.
+ *
+ * A model definition and a resolved route both do, and both are priced by the
+ * same arithmetic: the numbers live on the route when the model is reachable
+ * at more than one, and on the model itself when it is not. Taking the price
+ * block rather than the model is what keeps that from becoming two copies of
+ * this file.
+ */
+export interface PricedLlm {
+  name?: string;
+  provider?: string;
+  pricing?: ModelPricing;
+  maxOutputTokens?: number;
+}
+
+export interface PricedStt {
+  name?: string;
+  provider?: string;
+  sttPricing?: SttPricing;
+}
+
+export interface PricedMt {
+  name?: string;
+  provider?: string;
+  mtPricing?: MtPricing;
+}
+
+function label(priced: { name?: string; provider?: string }): string {
+  if (priced.name && priced.provider) return `"${priced.name}" at "${priced.provider}"`;
+  return priced.name ? `"${priced.name}"` : 'this route';
+}
 
 /**
  * What a call cost.
@@ -47,13 +80,13 @@ function perMTok(tokens: number, pricePerMTok: number): number {
  * them twice is the single easiest way to overstate cost.
  */
 export function calculateCost(
-  model: ModelDefinition,
+  model: PricedLlm,
   usage: TokenUsage,
   flat: FlatUsage = {},
 ): CostBreakdown {
   const pricing = model.pricing;
   if (!pricing) {
-    throw new CatalogError(`Model "${model.name}" has no per-token pricing`);
+    throw new CatalogError(`No per-token pricing for ${label(model)}`);
   }
 
   const cachedTokens = Math.max(0, Math.min(usage.cachedInputTokens, usage.inputTokens));
@@ -99,7 +132,7 @@ export function calculateCost(
  * that turns out too small has already let the spend through.
  */
 export function estimateCost(
-  model: ModelDefinition,
+  model: PricedLlm,
   estimatedInputTokens: number,
   maxOutputTokens?: number,
 ): number {
@@ -208,10 +241,10 @@ function perAudioHour(seconds: number, pricePerHour: number): number {
  * Everything after that is the same rule as tokens: integers, micro-units, one
  * rounding at the end, upwards.
  */
-export function calculateSttCost(model: ModelDefinition, usage: SttUsage): SttCostBreakdown {
+export function calculateSttCost(model: PricedStt, usage: SttUsage): SttCostBreakdown {
   const pricing = model.sttPricing;
   if (!pricing) {
-    throw new CatalogError(`Model "${model.name}" has no per-audio-hour pricing`);
+    throw new CatalogError(`No per-audio-hour pricing for ${label(model)}`);
   }
 
   const billedSeconds = Math.max(0, Math.ceil(usage.audioSeconds));
@@ -244,6 +277,54 @@ export function calculateSttCost(model: ModelDefinition, usage: SttUsage): SttCo
  * known from `ffprobe` before a provider is called, which makes speech the one
  * place in AI where an exact price can be quoted up front.
  */
-export function estimateSttCost(model: ModelDefinition, usage: SttUsage): number {
+export function estimateSttCost(model: PricedStt, usage: SttUsage): number {
   return calculateSttCost(model, usage).totalMicros;
+}
+
+/** How a translation was billed: by the characters handed to the engine. */
+export interface MtUsage {
+  characters: number;
+}
+
+export interface MtCostBreakdown {
+  /** Characters actually charged. Whole characters; there is no half of one. */
+  billedCharacters: number;
+  totalMicros: number;
+  priceVersion: string;
+}
+
+const CHARS_PER_MILLION = 1_000_000;
+
+/**
+ * Prices one translation by a dedicated engine.
+ *
+ * Characters of *input*, because that is what the engines charge for: the
+ * result has not been produced when the meter starts, and billing the output
+ * would make the same paragraph cost different money depending on how verbose
+ * the target language is.
+ */
+export function calculateMtCost(model: PricedMt, usage: MtUsage): MtCostBreakdown {
+  const pricing = model.mtPricing;
+  if (!pricing) {
+    throw new CatalogError(`No per-character pricing for ${label(model)}`);
+  }
+
+  const billedCharacters = Math.max(0, Math.ceil(usage.characters));
+  const total = (billedCharacters * pricing.perMillionCharsMicros) / CHARS_PER_MILLION;
+
+  return {
+    billedCharacters,
+    totalMicros: Math.ceil(total),
+    priceVersion: pricing.version,
+  };
+}
+
+/**
+ * What a translation will cost, before it runs.
+ *
+ * Exact rather than estimated, like speech and unlike tokens: the characters
+ * are counted from the text in hand.
+ */
+export function estimateMtCost(model: PricedMt, usage: MtUsage): number {
+  return calculateMtCost(model, usage).totalMicros;
 }

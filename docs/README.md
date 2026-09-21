@@ -11,11 +11,13 @@ It deliberately holds nothing about tenants, users, projects, permissions,
 storage or money. If a component needs one of those words, it belongs to the
 application, not here — and a test fails when it creeps in.
 
-> **Status: 0.2.0.** The package includes the catalog, model-selection policy,
-> provider registry, generation and streaming execution with retries, prompt
-> assembly, cost accounting, ports, error taxonomy, an in-memory state store,
-> and speech-to-text — batch and live — over AssemblyAI, Deepgram and Groq. It
-> is ready for use with a consumer-owned model catalog.
+> **Status: 0.3.0.** The package includes the catalog with multi-provider
+> routes, model-selection policy, provider registries, generation and streaming
+> execution with retries, prompt assembly, cost accounting, ports, error
+> taxonomy, speech-to-text — batch and live — over AssemblyAI, Deepgram and
+> Groq, subtitle rendering, and machine translation over a dedicated engine
+> with a binding glossary and deterministic quality detectors. It is ready for
+> use with a consumer-owned model catalog.
 
 ## Install
 
@@ -59,6 +61,13 @@ taskClasses:
   chat_agentic: [gemini-2.5-pro, claude-sonnet-4.5]
 ```
 
+**Task class names are yours.** The library ships no list of them: `summarize`
+and `chat_agentic` above are this example's words, and a product about support
+tickets writes `triage` and `suggest_reply` instead. What the library works out
+for itself is whether a class is served by language models, speech models or a
+translation engine — it reads that off the models nominated for it, and refuses
+a catalog whose class mixes two kinds.
+
 ```ts
 import { Catalog, calculateCost } from '@bozonx/ai-kit';
 
@@ -83,18 +92,40 @@ past into numbers nobody can defend.
 `tier` is the boundary a fallback may not cross. A premium model quietly
 replaced by a free one is not a degraded answer, it is a different product.
 
+## Routes: the same model somewhere else
+
+A model definition carries one provider, and that provider is its first route.
+`routes:` adds backups — the same model at another provider, at another price,
+tried in `priority` order:
+
+```yaml
+  - name: claude-sonnet-4.5
+    provider: openrouter
+    model: anthropic/claude-sonnet-4.5
+    pricing: { version: '2026-08', inputPerMTok: 3000000, outputPerMTok: 15000000 }
+    routes:
+      - id: sonnet-direct # your own id, echoed back in the accounting
+        provider: anthropic
+        model: claude-sonnet-4-5
+        priority: 10
+        pricing: { version: '2026-08-direct', inputPerMTok: 3000000, outputPerMTok: 15000000 }
+        capabilities: { structuredOutput: true } # only what this route changes
+```
+
+Every route of a model is tried before the next model is considered, which is
+what makes "we try another route, never another model" true for somebody who
+pinned a model by name. The call is priced at the route that actually answered,
+and `routeId` travels through `CallAccounting`, the `model` stream part and the
+usage event — so a consumer with its own health automation can report a route
+as unhealthy through `demotedRoutes`, which moves it to the back of the list
+and never removes it.
+
 ## Ports
 
 Everything the library needs from the outside arrives through `src/ports.ts`:
-`KeyProvider`, `UsageSink`, `TraceSink`, `StateStore`, `Clock`. All are optional
-except keys — a library that cannot be called until five interfaces are
-implemented gets worked around instead of used.
-
-`StateStore` matters more than it looks: circuit breaker and rate limiter state
-must be shared, because with two API processes behind a balancer, a model banned
-by one is happily used by the other. `MemoryStateStore` ships with the package
-for tests and single-process deployments; anything larger implements the port
-over Redis.
+`KeyProvider`, `UsageSink`, `TraceSink`, `Clock`. All are optional except keys —
+a library that cannot be called until five interfaces are implemented gets
+worked around instead of used.
 
 ## Streaming
 
@@ -136,7 +167,57 @@ Three things about it are worth knowing before the first invoice:
   settled and then altered reads as a bug to whoever is watching it appear.
 
 A speech model can never be routed a language task, or the other way round: the
-catalog refuses to load when a task class nominates the wrong kind of model.
+catalog refuses to load when a task class nominates models of two kinds.
+
+`renderSubtitles` turns stored segments into SRT or WebVTT, cutting long cues on
+a real pause when word timings are there and proportionally when they are not.
+`segmentWords` is its other half: providers return one flat word list for a
+whole recording and segments separately, and this puts the two together.
+
+## Translation
+
+The catalog's third kind of model is a dedicated translation engine, billed by
+the character:
+
+```ts
+const result = await kit.translate({
+  policy: { mode: 'auto', taskClass: 'translate_fast' },
+  texts: ['Hello there'],
+  targetLanguage: 'ru',
+  format: 'text',
+});
+// result.translations, result.characters, result.costMicros, result.priceVersion
+```
+
+Unlike a language model, the price is exact before the call: the characters are
+counted from the text in hand, so a quote shown to a customer and the amount
+finally charged can be the same number.
+
+Two pieces of the surrounding machinery are here too, because both are the same
+in every product that translates and both are quietly wrong when rewritten from
+memory:
+
+- **`glossary.ts`** — a binding glossary, applied three times and differently
+  each time: only the terms that occur in the text go into the prompt, a
+  "do not translate" term is put back by replacement rather than asked for
+  again, and a violated glossary is found deterministically.
+- **`quality.ts`** — deterministic detectors that run on every translation:
+  passages left in the source language, lost links and placeholders, a
+  structure that no longer matches, looping, truncation, an unexpected writing
+  system. No model takes part, which is what makes them free to run and
+  explainable to whoever is shown the result.
+
+## Installing only what you use
+
+The provider SDKs and `ws` are optional peer dependencies, loaded the first time
+a route asks for one. A product that only calls OpenAI installs
+`@ai-sdk/openai` and nothing else; one that transcribes files but never dictates
+needs no `ws`. A missing package produces a sentence naming what to install
+rather than a module-resolution stack trace.
+
+`@bozonx/ai-kit/stream` is a second entry point holding only the stream-part
+types, so a browser can share the wire vocabulary without resolving the Node
+entry point.
 
 ## Development
 

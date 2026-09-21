@@ -90,3 +90,11 @@ describe('Catalog', () => {
     }
   });
 });
+
+describe('the example catalog', () => {
+  it('is valid, because it is the first thing a new consumer copies', () => {
+    const path = fileURLToPath(new URL('../models.example.yaml', import.meta.url));
+
+    expect(() => Catalog.fromFile(path)).not.toThrow();
+  });
+});

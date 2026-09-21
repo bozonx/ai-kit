@@ -15,11 +15,9 @@ import {
   systemClock,
   type Clock,
   type KeyProvider,
-  type StateStore,
   type TraceSink,
   type UsageSink,
 } from './ports.js';
-import { MemoryStateStore } from './state/memory-state-store.js';
 import { ProviderRegistry, type ProviderFactory } from './providers/registry.js';
 import type { StreamPart } from './stream/stream-parts.js';
 import { SttProviderRegistry } from './stt/registry.js';
@@ -32,6 +30,14 @@ import {
   type TranscribeResult,
 } from './stt/run.js';
 import type { SttProviderFactory, TranscriptPart } from './stt/types.js';
+import { MtProviderRegistry } from './translate/registry.js';
+import {
+  runTranslate,
+  type MtExecutionDeps,
+  type TranslateRequest,
+  type TranslateResult,
+} from './translate/run.js';
+import type { TranslationProviderFactory } from './translate/types.js';
 
 /**
  * The package, assembled.
@@ -39,14 +45,12 @@ import type { SttProviderFactory, TranscriptPart } from './stt/types.js';
  * Everything except the catalog and the credentials is optional, and that is a
  * design constraint rather than a convenience: a library that cannot be called
  * until five ports are implemented gets worked around instead of used. The
- * defaults are honest about being defaults — usage goes nowhere, traces go
- * nowhere, and shared state is per-process.
+ * defaults are honest about being defaults — usage goes nowhere and traces go
+ * nowhere.
  */
 export interface AiKitOptions {
   catalog: Catalog;
   keys: KeyProvider;
-  /** Defaults to `MemoryStateStore`, which is wrong for more than one process. */
-  state?: StateStore;
   usage?: UsageSink;
   trace?: TraceSink;
   clock?: Clock;
@@ -55,11 +59,12 @@ export interface AiKitOptions {
   providers?: Record<string, ProviderFactory>;
   /** The same, for speech. A separate map because they are separate clients. */
   sttProviders?: Record<string, SttProviderFactory>;
+  /** And for dedicated translation engines. */
+  mtProviders?: Record<string, TranslationProviderFactory>;
 }
 
 export interface AiKit {
   readonly catalog: Catalog;
-  readonly state: StateStore;
   /** One answer; pass a schema for structured output. */
   generate<T = never>(request: GenerateRequest<T>): Promise<GenerateResult<T>>;
   /** The same call, part by part. */
@@ -68,35 +73,49 @@ export interface AiKit {
   transcribe(request: TranscribeRequest): Promise<TranscribeResult>;
   /** Live dictation: drafts while somebody speaks, settled text behind them. */
   transcribeStream(request: StreamTranscribeRequest): AsyncIterable<TranscriptPart>;
+  /** One batch of strings through a dedicated translation engine. */
+  translate(request: TranslateRequest): Promise<TranslateResult>;
 }
 
 export function createAiKit(options: AiKitOptions): AiKit {
-  const state = options.state ?? new MemoryStateStore(options.clock ?? systemClock);
+  const usage = options.usage ?? noopUsageSink;
+  const trace = options.trace ?? noopTraceSink;
+  const clock = options.clock ?? systemClock;
+  const retry = { ...DEFAULT_RETRY_POLICY, ...options.retry };
 
   const deps: ExecutionDeps = {
     catalog: options.catalog,
     registry: new ProviderRegistry({ keys: options.keys, factories: options.providers }),
-    usage: options.usage ?? noopUsageSink,
-    trace: options.trace ?? noopTraceSink,
-    clock: options.clock ?? systemClock,
-    retry: { ...DEFAULT_RETRY_POLICY, ...options.retry },
+    usage,
+    trace,
+    clock,
+    retry,
   };
 
   const sttDeps: SttExecutionDeps = {
     catalog: options.catalog,
     registry: new SttProviderRegistry({ keys: options.keys, factories: options.sttProviders }),
-    usage: deps.usage,
-    trace: deps.trace,
-    clock: deps.clock,
-    retry: deps.retry,
+    usage,
+    trace,
+    clock,
+    retry,
+  };
+
+  const mtDeps: MtExecutionDeps = {
+    catalog: options.catalog,
+    registry: new MtProviderRegistry({ keys: options.keys, factories: options.mtProviders }),
+    usage,
+    trace,
+    clock,
+    retry,
   };
 
   return {
     catalog: options.catalog,
-    state,
     generate: request => runGenerate(deps, request),
     stream: request => runStream(deps, request),
     transcribe: request => runTranscribe(sttDeps, request),
     transcribeStream: request => runTranscribeStream(sttDeps, request),
+    translate: request => runTranslate(mtDeps, request),
   };
 }

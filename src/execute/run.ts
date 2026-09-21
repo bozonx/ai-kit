@@ -49,6 +49,8 @@ export interface GenerateRequest<T = never> extends CommonRequest {
 export interface CallAccounting {
   provider: string;
   model: string;
+  /** The consumer's own id for the route that answered, when it gave one. */
+  routeId?: string;
   routedBy: RoutedBy;
   usage: TokenUsage;
   costMicros: number;
@@ -112,10 +114,22 @@ function accounting(
   attempts: number,
   latencyMs: number,
 ): CallAccounting {
-  const cost = calculateCost(candidate.model, usage);
+  // Priced off the route that answered, not the model that was asked for: on a
+  // fallback the two are the same model at different money, and charging the
+  // first choice's price for the second one's work is a discrepancy that only
+  // shows up when somebody reconciles an invoice.
+  const cost = calculateCost(
+    {
+      name: candidate.model.name,
+      provider: candidate.route.provider,
+      ...(candidate.route.pricing === undefined ? {} : { pricing: candidate.route.pricing }),
+    },
+    usage,
+  );
   return {
-    provider: candidate.model.provider,
+    provider: candidate.route.provider,
     model: candidate.model.name,
+    ...(candidate.route.id === undefined ? {} : { routeId: candidate.route.id }),
     routedBy: candidate.routedBy,
     usage,
     costMicros: cost.totalMicros,
@@ -146,6 +160,7 @@ async function recordUsage(
   await deps.usage.record({
     provider: data.provider,
     model: data.model,
+    ...(data.routeId === undefined ? {} : { routeId: data.routeId }),
     routedBy: data.routedBy,
     usage: data.usage,
     costMicros: data.costMicros,
@@ -155,6 +170,7 @@ async function recordUsage(
     attempts: data.attempts,
     traceId: request.traceId,
     audioSeconds: 0,
+    characters: 0,
   });
 }
 
@@ -179,7 +195,7 @@ export async function runGenerate<T = never>(
   const startedAt = deps.clock.now();
 
   const outcome = await attemptCandidates(deps, candidates, request, {
-    prepare: definition => deps.registry.languageModel(definition),
+    prepare: candidate => deps.registry.languageModel(candidate.model, candidate.route),
     run: async ({ client: model, signal }) => {
       const common = {
         model,
@@ -268,8 +284,8 @@ export async function* runStream(
   // reader would see. Past that the answer is committed to whichever model
   // produced it.
   const outcome = await attemptCandidates(deps, candidates, request, {
-    prepare: definition => deps.registry.languageModel(definition),
-    run: async ({ client: model, definition, signal }) => {
+    prepare: candidate => deps.registry.languageModel(candidate.model, candidate.route),
+    run: async ({ client: model, candidate, signal }) => {
       const result = streamText({
         model,
         system: request.system,
@@ -296,8 +312,8 @@ export async function* runStream(
         if (step.done) break;
         if (step.value.type === 'error') {
           throw classifyError(step.value.error, {
-            provider: definition.provider,
-            model: definition.name,
+            provider: candidate.route.provider,
+            model: candidate.model.name,
             callerAborted: request.abortSignal?.aborted,
           });
         }
@@ -312,8 +328,9 @@ export async function* runStream(
   const candidate = outcome.candidate;
   yield {
     type: 'model',
-    provider: candidate.model.provider,
+    provider: candidate.route.provider,
     model: candidate.model.name,
+    ...(candidate.route.id === undefined ? {} : { routeId: candidate.route.id }),
     routedBy: candidate.routedBy,
   };
 
@@ -393,7 +410,7 @@ export async function* runStream(
           // Not a break: the accounting parts arrive after the error, and a
           // stream that produced tokens is billed whether or not it finished.
           failure ??= classifyError(part.error, {
-            provider: candidate.model.provider,
+            provider: candidate.route.provider,
             model: candidate.model.name,
             callerAborted: request.abortSignal?.aborted,
           });
@@ -407,7 +424,7 @@ export async function* runStream(
     }
   } catch (error) {
     failure = classifyError(error, {
-      provider: candidate.model.provider,
+      provider: candidate.route.provider,
       model: candidate.model.name,
       callerAborted: request.abortSignal?.aborted,
     });

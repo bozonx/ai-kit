@@ -1,6 +1,6 @@
 import type { Catalog } from '../catalog/catalog.js';
 import { calculateSttCost } from '../catalog/pricing.js';
-import { kindOfTaskClass, type TaskClass } from '../catalog/schema.js';
+import type { TaskClass } from '../catalog/schema.js';
 import { AiError } from '../errors.js';
 import { attemptCandidates, type AttemptDeps, type AttemptRequest } from '../execute/attempt.js';
 import { classifyError } from '../execute/classify.js';
@@ -69,6 +69,8 @@ export interface StreamTranscribeRequest extends CommonSttRequest {
 export interface SttAccounting {
   provider: string;
   model: string;
+  /** The consumer's own id for the route that answered, when it gave one. */
+  routeId?: string;
   routedBy: RoutedBy;
   audioSeconds: number;
   costMicros: number;
@@ -90,7 +92,7 @@ function pickCandidates(
   // An unknown or text-shaped task class is refused rather than defaulted:
   // guessing here would route somebody's audio to whichever model happened to
   // be first in a list written for something else.
-  if (kindOfTaskClass(policy.taskClass) !== 'stt') {
+  if (deps.catalog.kindOf(policy.taskClass) !== 'stt') {
     throw new AiError('invalid_request', `Task class "${policy.taskClass}" is not a speech task`);
   }
 
@@ -132,9 +134,11 @@ async function record(
   await deps.usage.record({
     provider: data.provider,
     model: data.model,
+    ...(data.routeId === undefined ? {} : { routeId: data.routeId }),
     routedBy: data.routedBy,
     usage: NO_TOKENS,
     audioSeconds: data.audioSeconds,
+    characters: 0,
     costMicros: data.costMicros,
     priceVersion: data.priceVersion,
     status,
@@ -152,14 +156,24 @@ function priceIt(
   attempts: number,
   latencyMs: number,
 ): SttAccounting {
-  const cost = calculateSttCost(candidate.model, {
-    audioSeconds,
-    realtime,
-    diarization: options.diarization,
-  });
+  const cost = calculateSttCost(
+    {
+      name: candidate.model.name,
+      provider: candidate.route.provider,
+      ...(candidate.route.sttPricing === undefined
+        ? {}
+        : { sttPricing: candidate.route.sttPricing }),
+    },
+    {
+      audioSeconds,
+      realtime,
+      diarization: options.diarization,
+    },
+  );
   return {
-    provider: candidate.model.provider,
+    provider: candidate.route.provider,
     model: candidate.model.name,
+    ...(candidate.route.id === undefined ? {} : { routeId: candidate.route.id }),
     routedBy: candidate.routedBy,
     audioSeconds: cost.billedSeconds,
     costMicros: cost.totalMicros,
@@ -179,14 +193,14 @@ export async function runTranscribe(
   const startedAt = deps.clock.now();
 
   const outcome = await attemptCandidates(deps, candidates, request, {
-    prepare: definition => deps.registry.provider(definition),
-    run: async ({ client, definition, signal }) => {
+    prepare: candidate => deps.registry.provider(candidate.model, candidate.route),
+    run: async ({ client, candidate, signal }) => {
       // Checked per candidate rather than once: a fallback is a different
       // model, and the option the caller asked for is not automatically one it
       // has. A pinned model that cannot do the job fails here, loudly.
-      assertSttCapabilities(definition, options, false);
+      assertSttCapabilities(candidate.model, options, false);
       return client.transcribe({
-        modelId: definition.model,
+        modelId: candidate.route.model,
         source: request.source,
         options,
         signal,
@@ -227,18 +241,18 @@ export async function* runTranscribeStream(
   // whoever answered: reconnecting to a second provider mid-sentence would
   // rewrite text somebody is already reading.
   const outcome = await attemptCandidates(deps, candidates, request, {
-    prepare: definition => deps.registry.provider(definition),
-    run: async ({ client, definition, signal }) => {
-      assertSttCapabilities(definition, options, true);
+    prepare: candidate => deps.registry.provider(candidate.model, candidate.route),
+    run: async ({ client, candidate, signal }) => {
+      assertSttCapabilities(candidate.model, options, true);
       if (!client.transcribeStream) {
         throw new AiError(
           'invalid_request',
-          `Provider "${definition.provider}" has no live transcription`,
-          { provider: definition.provider, model: definition.name },
+          `Provider "${candidate.route.provider}" has no live transcription`,
+          { provider: candidate.route.provider, model: candidate.model.name },
         );
       }
       return client.transcribeStream({
-        modelId: definition.model,
+        modelId: candidate.route.model,
         options,
         sampleRate,
         audio: request.audio,
@@ -252,8 +266,9 @@ export async function* runTranscribeStream(
 
   yield {
     type: 'model',
-    provider: candidate.model.provider,
+    provider: candidate.route.provider,
     model: candidate.model.name,
+    ...(candidate.route.id === undefined ? {} : { routeId: candidate.route.id }),
     routedBy: candidate.routedBy,
   };
 
@@ -281,7 +296,7 @@ export async function* runTranscribeStream(
     }
   } catch (error) {
     failure = classifyError(error, {
-      provider: candidate.model.provider,
+      provider: candidate.route.provider,
       model: candidate.model.name,
       callerAborted: request.abortSignal?.aborted,
     });

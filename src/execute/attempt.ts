@@ -1,4 +1,3 @@
-import type { ModelDefinition } from '../catalog/schema.js';
 import { AiError, AllCandidatesFailedError } from '../errors.js';
 import type { ModelCandidate } from '../policy/policy.js';
 import type { Clock, TraceSink } from '../ports.js';
@@ -104,8 +103,8 @@ export async function attemptCandidates<C, R>(
   candidates: ModelCandidate[],
   request: AttemptRequest,
   steps: {
-    prepare: (definition: ModelDefinition) => Promise<C>;
-    run: (params: { client: C; definition: ModelDefinition; signal: AbortSignal }) => Promise<R>;
+    prepare: (candidate: ModelCandidate) => Promise<C>;
+    run: (params: { client: C; candidate: ModelCandidate; signal: AbortSignal }) => Promise<R>;
   },
 ): Promise<AttemptOutcome<R>> {
   const retry = {
@@ -127,16 +126,16 @@ export async function attemptCandidates<C, R>(
 
       attempts += 1;
       try {
-        const client = await steps.prepare(candidate.model);
+        const client = await steps.prepare(candidate);
         const value = await steps.run({
           client,
-          definition: candidate.model,
+          candidate,
           signal: attemptSignal(deadline, deps.clock, request.abortSignal),
         });
         return { value, candidate, attempts };
       } catch (error) {
         const classified = classifyError(error, {
-          provider: candidate.model.provider,
+          provider: candidate.route.provider,
           model: candidate.model.name,
           callerAborted: request.abortSignal?.aborted,
         });
@@ -146,7 +145,7 @@ export async function attemptCandidates<C, R>(
         }
 
         failures.push({
-          provider: candidate.model.provider,
+          provider: candidate.route.provider,
           model: candidate.model.name,
           error: classified,
         });
@@ -157,7 +156,7 @@ export async function attemptCandidates<C, R>(
           startedAt: deps.clock.now(),
           endedAt: deps.clock.now(),
           metadata: {
-            provider: candidate.model.provider,
+            provider: candidate.route.provider,
             model: candidate.model.name,
             kind: classified.kind,
           },

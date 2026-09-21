@@ -76,15 +76,18 @@ const cheap = catalog.require('cheap');
 const realtime = catalog.require('backup');
 
 describe('the speech catalog', () => {
-  it('keeps speech models out of language task classes', () => {
-    expect(() => Catalog.fromYaml(yaml.replace('chat_simple: [writer]', 'chat_simple: [cheap]'))) //
-      .toThrow(/kind "stt"/);
+  it('refuses a task class that mixes speech and language models', () => {
+    expect(() =>
+      Catalog.fromYaml(
+        yaml.replace('transcription: [cheap, backup]', 'transcription: [cheap, writer]'),
+      ),
+    ).toThrow(/mixes models of kind "stt" and "llm"/);
   });
 
-  it('keeps language models out of speech task classes', () => {
-    expect(() =>
-      Catalog.fromYaml(yaml.replace('dictation: [backup]', 'dictation: [writer]')),
-    ).toThrow(/kind "llm"/);
+  it('reads the kind of a task class off the models nominated for it', () => {
+    expect(catalog.kindOf('transcription')).toBe('stt');
+    expect(catalog.kindOf('chat_simple')).toBe('llm');
+    expect(catalog.kindOf('nothing-like-this')).toBeUndefined();
   });
 
   it('refuses a speech model priced per token', () => {

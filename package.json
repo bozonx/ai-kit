@@ -1,6 +1,6 @@
 {
   "name": "@bozonx/ai-kit",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Reusable core for building AI features: priced model catalog, model policy, provider adapters, retries and prompt assembly",
   "type": "module",
   "license": "MIT",
@@ -19,6 +19,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./stream": {
+      "types": "./dist/stream/stream-parts.d.ts",
+      "import": "./dist/stream/stream-parts.js"
     },
     "./package.json": "./package.json"
   },
@@ -43,17 +47,17 @@
     "prepublishOnly": "pnpm run check"
   },
   "dependencies": {
-    "@ai-sdk/google": "^4.0.50",
-    "@ai-sdk/openai": "^4.0.46",
-    "@openrouter/ai-sdk-provider": "^3.0.0",
-    "ai": "^7.0.77",
+    "ai": "^7.0.84",
     "js-yaml": "^5.3.0",
-    "ws": "^8.21.3",
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@ai-sdk/anthropic": "^4.0.46",
+    "@ai-sdk/google": "^4.0.76",
+    "@ai-sdk/openai": "^4.0.71",
     "@eslint/js": "^9.39.2",
     "@jest/globals": "^30.2.0",
+    "@openrouter/ai-sdk-provider": "^3.1.0",
     "@types/jest": "^30.0.0",
     "@types/node": "^25.0.8",
     "@types/ws": "^8.18.1",
@@ -66,7 +70,8 @@
     "jest": "^30.2.0",
     "prettier": "^3.7.4",
     "ts-jest": "^29.4.6",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "ws": "^8.21.3"
   },
   "engines": {
     "node": ">=22.0.0"
@@ -74,5 +79,30 @@
   "packageManager": "pnpm@10.25.0",
   "publishConfig": {
     "access": "public"
+  },
+  "sideEffects": false,
+  "peerDependencies": {
+    "@ai-sdk/anthropic": "^4.0.46",
+    "@ai-sdk/google": "^4.0.76",
+    "@ai-sdk/openai": "^4.0.71",
+    "@openrouter/ai-sdk-provider": "^3.1.0",
+    "ws": "^8.21.3"
+  },
+  "peerDependenciesMeta": {
+    "@ai-sdk/anthropic": {
+      "optional": true
+    },
+    "@ai-sdk/google": {
+      "optional": true
+    },
+    "@ai-sdk/openai": {
+      "optional": true
+    },
+    "@openrouter/ai-sdk-provider": {
+      "optional": true
+    },
+    "ws": {
+      "optional": true
+    }
   }
 }

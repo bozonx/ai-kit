@@ -12,6 +12,10 @@
 #
 # Verify prices against the provider before trusting these numbers; they are
 # written down here to show the shape, and providers change them.
+#
+# Task class names are yours. The library has no list of them: it works out
+# whether a class is served by language models, speech models or a translation
+# engine from the models nominated for it, and refuses a class that mixes them.
 
 models:
   - name: gemini-2.5-flash
@@ -87,6 +91,11 @@ models:
     tags: [reasoning, long-context]
 
   # The long tail goes through OpenRouter: one key, one adapter, everything else.
+  #
+  # `routes` is the same model somewhere else. The definition above is the
+  # first route; each entry below is a backup tried in `priority` order when
+  # the one before it is having a bad day. This is what makes "we try another
+  # route, never another model" true for somebody who pinned a model by name.
   - name: claude-sonnet-4.5
     provider: openrouter
     model: anthropic/claude-sonnet-4.5
@@ -107,6 +116,17 @@ models:
       inputPerMTok: 3000000
       outputPerMTok: 15000000
       cachedInputPerMTok: 300000
+    routes:
+      - provider: anthropic
+        model: claude-sonnet-4-5
+        priority: 10
+        # Direct is cheaper than the aggregator and caches prompts, which the
+        # aggregated route does not. A route states only what it changes.
+        pricing:
+          version: '2026-08-direct'
+          inputPerMTok: 3000000
+          outputPerMTok: 15000000
+          cachedInputPerMTok: 300000
     weight: 5
     available: true
     tags: [agentic, writing]
@@ -223,12 +243,35 @@ models:
     available: true
     tags: [fallback, realtime]
 
+  # Machine translation: a dedicated engine, billed by the character. Not a
+  # language model and not reached through the AI SDK — it is here because it
+  # is chosen from this catalog, priced by the same arithmetic and retried by
+  # the same loop.
+
+  - name: google-translate
+    kind: mt
+    provider: google
+    model: nmt
+    tier: economy
+    mtCapabilities:
+      html: true
+      languageDetection: true
+    mtPricing:
+      version: '2026-08'
+      # Micro-units per million characters: $20 per million is 20000000.
+      perMillionCharsMicros: 20000000
+    weight: 10
+    available: true
+    tags: [cheap, bulk]
+
 
 # Which models are candidates for which kind of work, in order. The first one
 # that is healthy and fits the request answers; the rest are the fallback chain.
 #
 # This lives in the catalog rather than in code on purpose: changing the model
 # behind a product feature must not require a release of the library.
+#
+# The names below are this example's; yours will be your product's words.
 taskClasses:
   rewrite: [gemini-2.5-flash, gpt-4.1-mini]
   translate: [gemini-2.5-flash, gpt-4.1-mini]
@@ -250,3 +293,6 @@ taskClasses:
   # Subtitles need word timings and speakers, so only models that claim both
   # belong on this list.
   subtitles: [assemblyai-universal, deepgram-nova-3]
+  # Translation by a dedicated engine. A class may not mix kinds, so this one
+  # holds engines and the `translate` class above holds language models.
+  translate_fast: [google-translate]

@@ -37,28 +37,6 @@ export interface TraceSink {
   span(trace: SpanTrace): void;
 }
 
-/**
- * Shared state for the parts that must agree across processes.
- *
- * Circuit breaker and rate limiter live here rather than in a `Map`, because a
- * `Map` is per-instance: with two API processes behind a balancer, a model
- * banned by one is happily used by the other. The port is declared now even
- * though its users arrive later, so that adding them does not change the
- * public API.
- */
-export interface StateStore {
-  incr(key: string, ttlSec: number): Promise<number>;
-  get(key: string): Promise<string | null>;
-  set(key: string, value: string, ttlSec: number): Promise<void>;
-  /** Atomic compare-and-set, for circuit breaker state transitions. */
-  compareAndSet(
-    key: string,
-    expected: string | null,
-    next: string,
-    ttlSec: number,
-  ): Promise<boolean>;
-}
-
 /** Injectable time, so that retry and cooldown logic is testable. */
 export interface Clock {
   now(): number;
@@ -95,11 +73,16 @@ export interface UsageEvent {
   /**
    * Seconds of audio the call transcribed. Zero for everything else.
    *
-   * Speech is billed by the second and text by the token, and a consumer that
-   * has to report on both needs each in its own column — deriving one from a
-   * cost is how a price change rewrites history.
+   * Speech is billed by the second, text by the token and a dedicated
+   * translation engine by the character, and a consumer that has to report on
+   * all three needs each in its own column — deriving one from a cost is how a
+   * price change rewrites history.
    */
   audioSeconds: number;
+  /** Characters a translation engine was handed. Zero for everything else. */
+  characters: number;
+  /** The route that answered, by the consumer's own id, when it gave one. */
+  routeId?: string;
   /** What the call cost us, in micro-units of the currency. 1_000_000 = 1 USD. */
   costMicros: number;
   priceVersion: string;

@@ -138,6 +138,8 @@ export interface TranscriptModelPart {
   type: 'model';
   provider: string;
   model: string;
+  /** The consumer's own id for the route that answered, when it gave one. */
+  routeId?: string;
   routedBy: RoutedBy;
 }
 

@@ -1,4 +1,5 @@
-import { AiError, type AiErrorKind } from '../../errors.js';
+import { AiError } from '../../errors.js';
+import { kindFromStatus } from '../../execute/classify.js';
 import type { TranscriptSegment, WordTiming } from '../types.js';
 
 /**
@@ -10,14 +11,7 @@ import type { TranscriptSegment, WordTiming } from '../types.js';
  * segments.
  */
 
-export function kindFromStatus(status: number): AiErrorKind {
-  if (status === 429) return 'rate_limit';
-  if (status === 401 || status === 403) return 'auth';
-  if (status === 408 || status === 409) return 'provider_unavailable';
-  if (status >= 500) return 'provider_unavailable';
-  if (status === 400 || status === 404 || status === 422) return 'invalid_request';
-  return 'unknown';
-}
+export { kindFromStatus } from '../../execute/classify.js';
 
 export interface HttpContext {
   provider: string;
@@ -45,7 +39,7 @@ export async function requestJson<T>(
 
   if (!response.ok) {
     throw new AiError(
-      kindFromStatus(response.status),
+      kindFromStatus(response.status, body),
       `${context.provider} returned ${response.status}: ${truncate(body)}`,
       { ...context, status: response.status },
     );

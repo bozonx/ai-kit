@@ -13,61 +13,32 @@ import { z } from 'zod';
  */
 
 /**
- * Classes of work, known at the call site rather than guessed from the prompt.
+ * A class of work, named by the consumer.
  *
- * The point of naming them is that the caller always knows which one it is —
- * an alt-text generator is not going to accidentally be a research agent — so
- * routing needs no classifier and no model call of its own.
+ * Deliberately a free string. It used to be a closed list, and the list held
+ * words like `generate_post` and `alt_text` — the vocabulary of one product,
+ * shipped inside a library that claims to know nothing about anybody's domain.
+ * A second product could then either fork the package or call its ticket
+ * triage `rewrite`.
+ *
+ * What the library still needs to know — whether a class is served by language
+ * models or by speech ones — is derived from the models nominated for it, and
+ * the schema refuses a class that nominates both. That is the same invariant,
+ * read off the data instead of hard-coded.
  */
-export const TASK_CLASSES = [
-  'rewrite',
-  'translate',
-  'summarize',
-  'tags',
-  'alt_text',
-  'generate_post',
-  'chat_simple',
-  'chat_agentic',
-  'diagnose',
-  'bulk_plan',
-  'vision',
-  'image',
-  'video',
-  'dictation',
-  'transcription',
-  'subtitles',
-] as const;
+export type TaskClass = string;
 
-export type TaskClass = (typeof TASK_CLASSES)[number];
-
-export const taskClassSchema = z.enum(TASK_CLASSES);
+export const taskClassSchema = z.string().min(1);
 
 /**
  * What a model is, which decides how it is priced and what it is asked to do.
  *
- * The two kinds share one catalog on purpose: two tables of models are two
+ * The kinds share one catalog on purpose: several tables of models are several
  * places where somebody forgets to bump a price version. They do not share a
  * task class, and that is enforced below rather than remembered.
  */
-export const modelKindSchema = z.enum(['llm', 'stt']);
+export const modelKindSchema = z.enum(['llm', 'stt', 'mt']);
 export type ModelKind = z.infer<typeof modelKindSchema>;
-
-/**
- * Task classes served by speech-to-text models.
- *
- * The three are not cosmetic variants of one another. `dictation` is realtime
- * and judged on latency; `transcription` is batch and judged on price per hour;
- * `subtitles` is batch and cannot be served at all by a model without word
- * timings, because a subtitle that is not aligned is not a subtitle.
- */
-export const STT_TASK_CLASSES = ['dictation', 'transcription', 'subtitles'] as const;
-
-const STT_TASK_CLASS_SET: ReadonlySet<string> = new Set(STT_TASK_CLASSES);
-
-/** Which kind of model a task class is served by. */
-export function kindOfTaskClass(taskClass: TaskClass): ModelKind {
-  return STT_TASK_CLASS_SET.has(taskClass) ? 'stt' : 'llm';
-}
 
 /**
  * Quality class, and the boundary a fallback may not cross.
@@ -118,6 +89,23 @@ export const capabilitiesSchema = z.object({
 export type ModelCapabilities = z.infer<typeof capabilitiesSchema>;
 
 /**
+ * The same capabilities, as a route states them.
+ *
+ * Every field optional and nothing defaulted: a route says what it changes
+ * about the model, and silence means "whatever the model says". Defaulting
+ * here would turn every unstated capability into a denial.
+ */
+export const routeCapabilitiesSchema = z.object({
+  tools: z.boolean().optional(),
+  structuredOutput: z.boolean().optional(),
+  promptCaching: z.boolean().optional(),
+  reasoning: z.boolean().optional(),
+  streaming: z.boolean().optional(),
+});
+
+export type RouteCapabilities = z.infer<typeof routeCapabilitiesSchema>;
+
+/**
  * Prices per hour of audio, in micro-units of the currency (1_000_000 = 1 USD).
  *
  * A different unit from `pricing` for the same reason it is a different field:
@@ -152,6 +140,77 @@ export const sttCapabilitiesSchema = z.object({
 
 export type SttCapabilities = z.infer<typeof sttCapabilitiesSchema>;
 
+/**
+ * Prices per million characters, in micro-units of the currency.
+ *
+ * The third unit, and the third one that had to be its own field. A dedicated
+ * translation engine bills the characters it was handed, before it has
+ * produced anything — there is no output price because there is no output
+ * anybody is charged for.
+ */
+export const mtPricingSchema = z.object({
+  /** Label of the price table these numbers came from, e.g. '2026-08'. */
+  version: z.string().min(1),
+  perMillionCharsMicros: z.number().int().nonnegative(),
+});
+
+export type MtPricing = z.infer<typeof mtPricingSchema>;
+
+export const mtCapabilitiesSchema = z.object({
+  /** Translates HTML without destroying the tags. */
+  html: z.boolean().default(false),
+  /** Works out the source language when it is not given one. */
+  languageDetection: z.boolean().default(true),
+  /** Accepts a glossary the engine itself enforces. */
+  glossary: z.boolean().default(false),
+});
+
+export type MtCapabilities = z.infer<typeof mtCapabilitiesSchema>;
+
+/**
+ * One more way to reach a model the catalog already defines.
+ *
+ * The same model is served by several providers at different prices, with
+ * different latencies and different bad days. Without this the only fallback
+ * available to somebody who pinned a model by name would be a *different
+ * model*, which is exactly what pinning is meant to prevent.
+ *
+ * The definition itself is the first route; everything listed here is a backup
+ * for it, tried in `priority` order.
+ */
+export const modelRouteSchema = z.object({
+  /**
+   * The consumer's own identifier for this route, echoed back in the
+   * accounting. The library never interprets it — it exists so that "which of
+   * my routes answered" is a question the consumer can answer about its own
+   * rows without matching on provider names.
+   */
+  id: z.string().min(1).optional(),
+  /** Which adapter runs it. Must have an entry in the provider registry. */
+  provider: z.string().min(1),
+  /** The provider's own id for the model, which is rarely the same string. */
+  model: z.string().min(1),
+  /** Where the adapter should talk, when it is not the provider's own endpoint. */
+  baseUrl: z.url().optional(),
+  /** Lower goes first. The definition's own route is always tried first. */
+  priority: z.number().int().default(100),
+  /**
+   * What the provider can actually do, where it differs from the model.
+   *
+   * A route without structured output must not be handed a request that needs
+   * it, however capable the model is elsewhere.
+   */
+  capabilities: routeCapabilitiesSchema.optional(),
+  /** What this route charges. Falls back to the model's own price. */
+  pricing: pricingSchema.optional(),
+  sttPricing: sttPricingSchema.optional(),
+  mtPricing: mtPricingSchema.optional(),
+  /** Set to false to take a route out of rotation without deleting its prices. */
+  available: z.boolean().default(true),
+});
+
+export type ModelRouteDefinition = z.infer<typeof modelRouteSchema>;
+
 export const modelSchema = z
   .object({
     /** Name used everywhere else: in requests, in usage events, in the UI. */
@@ -168,7 +227,11 @@ export const modelSchema = z
      * Exists so that a self-hosted or fine-tuned model is a line of YAML rather
      * than a new adapter — the difference between trying one and not trying one.
      */
-    baseUrl: z.string().url().optional(),
+    baseUrl: z.url().optional(),
+    /** The consumer's own identifier for the model's first route. */
+    routeId: z.string().min(1).optional(),
+    /** Backup routes: the same model somewhere else. */
+    routes: z.array(modelRouteSchema).default([]),
     tier: modelTierSchema,
     /** Language models only; meaningless for a model billed by the second. */
     contextSize: z.number().int().positive().optional(),
@@ -183,6 +246,8 @@ export const modelSchema = z
     pricing: pricingSchema.optional(),
     sttCapabilities: sttCapabilitiesSchema.optional(),
     sttPricing: sttPricingSchema.optional(),
+    mtCapabilities: mtCapabilitiesSchema.optional(),
+    mtPricing: mtPricingSchema.optional(),
     /**
      * Languages the model claims, as BCP-47 tags. Empty means "any", the same
      * convention language models get by saying nothing.
@@ -203,17 +268,51 @@ export const modelSchema = z
       ctx.addIssue({ code: 'custom', path: ['name'], message: `${model.name}: ${message}` });
     };
 
+    const providers = new Set([model.provider]);
+    for (const route of model.routes) {
+      // Two routes at one provider are either a duplicate or a mistake, and
+      // both of them mean a fallback that goes nowhere new.
+      if (providers.has(route.provider)) {
+        issue(`has more than one route at provider "${route.provider}"`);
+      }
+      providers.add(route.provider);
+    }
+
     if (model.kind === 'llm') {
       if (!model.pricing) issue('a language model needs `pricing`');
       if (model.sttPricing) issue('`sttPricing` belongs to a model of kind `stt`');
       if (model.sttCapabilities) issue('`sttCapabilities` belongs to a model of kind `stt`');
+      if (model.mtPricing) issue('`mtPricing` belongs to a model of kind `mt`');
       if (model.contextSize === undefined) issue('a language model needs `contextSize`');
       if (model.maxOutputTokens === undefined) issue('a language model needs `maxOutputTokens`');
+      for (const route of model.routes) {
+        if (route.sttPricing ?? route.mtPricing) {
+          issue(`route at "${route.provider}" prices a different kind of model`);
+        }
+      }
+      return;
+    }
+
+    if (model.kind === 'mt') {
+      if (!model.mtPricing) issue('a translation model needs `mtPricing`');
+      if (model.pricing) issue('`pricing` is per token and belongs to a model of kind `llm`');
+      if (model.sttPricing) issue('`sttPricing` belongs to a model of kind `stt`');
+      for (const route of model.routes) {
+        if (route.pricing ?? route.sttPricing) {
+          issue(`route at "${route.provider}" prices a different kind of model`);
+        }
+      }
       return;
     }
 
     if (!model.sttPricing) issue('a speech model needs `sttPricing`');
     if (model.pricing) issue('`pricing` is per token and belongs to a model of kind `llm`');
+    if (model.mtPricing) issue('`mtPricing` belongs to a model of kind `mt`');
+    for (const route of model.routes) {
+      if (route.pricing ?? route.mtPricing) {
+        issue(`route at "${route.provider}" prices a different kind of model`);
+      }
+    }
     if (
       model.sttCapabilities?.realtime &&
       model.sttPricing?.perAudioHourRealtimeMicros === undefined
@@ -232,14 +331,27 @@ export const modelSchema = z
 
 export type ModelDefinition = z.infer<typeof modelSchema>;
 
+/**
+ * A model as it is written down, before the defaults are filled in.
+ *
+ * The type to annotate a catalog kept in code with: a literal that omits
+ * `routes`, `weight` or `tags` is a valid catalog, and only becomes the fuller
+ * shape once it has been through the schema.
+ */
+export type ModelDefinitionInput = z.input<typeof modelSchema>;
+
 export const catalogSchema = z
   .object({
     models: z.array(modelSchema).min(1),
     /**
      * Candidates per task class, in order. The first one that is healthy and
      * fits the request wins; the rest are the fallback chain.
+     *
+     * The class names are the consumer's own words. What they may not do is
+     * mix kinds: a class served by both a speech model and a language one is a
+     * class whose requests would be routed by whichever happened to be first.
      */
-    taskClasses: z.partialRecord(taskClassSchema, z.array(z.string().min(1)).min(1)),
+    taskClasses: z.record(taskClassSchema, z.array(z.string().min(1)).min(1)),
   })
   .superRefine((catalog, ctx) => {
     const names = new Set<string>();
@@ -257,7 +369,7 @@ export const catalogSchema = z
     const byName = new Map(catalog.models.map(model => [model.name, model]));
 
     for (const [taskClass, candidates] of Object.entries(catalog.taskClasses)) {
-      const wantedKind = kindOfTaskClass(taskClass as TaskClass);
+      let kind: ModelKind | undefined;
       for (const candidate of candidates ?? []) {
         const model = byName.get(candidate);
         if (!model) {
@@ -268,14 +380,15 @@ export const catalogSchema = z
           });
           continue;
         }
-        // The invariant a test would otherwise have to state about every
-        // deployment's catalog: a speech model can never answer a language
-        // task, and a language model can never be routed a transcription.
-        if (model.kind !== wantedKind) {
+        // The invariant that used to be a hard-coded list of speech task
+        // classes: whatever a class is called, everything nominated for it has
+        // to be the same kind of thing, or the request is routed by accident.
+        kind ??= model.kind;
+        if (model.kind !== kind) {
           ctx.addIssue({
             code: 'custom',
             path: ['taskClasses', taskClass],
-            message: `Model "${candidate}" is of kind "${model.kind}", but task class "${taskClass}" is served by "${wantedKind}" models`,
+            message: `Task class "${taskClass}" mixes models of kind "${kind}" and "${model.kind}"`,
           });
         }
       }
@@ -283,3 +396,6 @@ export const catalogSchema = z
   });
 
 export type CatalogData = z.infer<typeof catalogSchema>;
+
+/** A catalog as it is written down. See `ModelDefinitionInput`. */
+export type CatalogInput = z.input<typeof catalogSchema>;

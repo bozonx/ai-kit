@@ -51,6 +51,7 @@ export default [
                 Reflect: 'readonly',
                 URL: 'readonly',
                 TextEncoder: 'readonly',
+                structuredClone: 'readonly',
                 TextDecoder: 'readonly',
                 AbortSignal: 'readonly',
                 AbortController: 'readonly',

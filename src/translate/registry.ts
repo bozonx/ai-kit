@@ -2,37 +2,33 @@ import type { ResolvedRoute } from '../catalog/catalog.js';
 import type { ModelDefinition } from '../catalog/schema.js';
 import { AiError } from '../errors.js';
 import type { KeyProvider } from '../ports.js';
-import { assemblyAiSttProvider } from './providers/assemblyai.js';
-import { deepgramSttProvider } from './providers/deepgram.js';
-import { groqSttProvider } from './providers/groq.js';
-import type { SttProvider, SttProviderFactory } from './types.js';
+import { googleCloudTranslationProvider } from './providers/google-cloud.js';
+import type { TranslationProvider, TranslationProviderFactory } from './types.js';
 
 /**
- * Which adapter transcribes for a provider.
+ * Which adapter translates for a provider.
  *
- * A twin of the language-model registry rather than a branch inside it: the two
- * resolve different clients from the same catalog entry, and the only thing a
- * shared version would share is the word "registry".
+ * A third sibling of the language-model and speech registries. They resolve
+ * different clients from the same catalog entry, and the only thing a shared
+ * version would share is the word "registry".
  */
 
-const BUILTIN_FACTORIES: Readonly<Record<string, SttProviderFactory>> = {
-  assemblyai: assemblyAiSttProvider,
-  deepgram: deepgramSttProvider,
-  groq: groqSttProvider,
+const BUILTIN_FACTORIES: Readonly<Record<string, TranslationProviderFactory>> = {
+  google: googleCloudTranslationProvider,
 };
 
-export interface SttRegistryOptions {
+export interface MtRegistryOptions {
   keys: KeyProvider;
   /** Extra or replacement adapters, by provider id. */
-  factories?: Record<string, SttProviderFactory>;
+  factories?: Record<string, TranslationProviderFactory>;
 }
 
-export class SttProviderRegistry {
+export class MtProviderRegistry {
   private readonly keys: KeyProvider;
-  private readonly factories: Readonly<Record<string, SttProviderFactory>>;
-  private readonly cache = new Map<string, SttProvider>();
+  private readonly factories: Readonly<Record<string, TranslationProviderFactory>>;
+  private readonly cache = new Map<string, TranslationProvider>();
 
-  constructor(options: SttRegistryOptions) {
+  constructor(options: MtRegistryOptions) {
     this.keys = options.keys;
     this.factories = { ...BUILTIN_FACTORIES, ...options.factories };
   }
@@ -42,12 +38,15 @@ export class SttProviderRegistry {
   }
 
   /** Resolves a route into a client, cached per provider, key and endpoint. */
-  public async provider(model: ModelDefinition, route: ResolvedRoute): Promise<SttProvider> {
+  public async provider(
+    model: ModelDefinition,
+    route: ResolvedRoute,
+  ): Promise<TranslationProvider> {
     const factory = this.factories[route.provider];
     if (!factory) {
       throw new AiError(
         'invalid_request',
-        `No speech adapter registered for provider "${route.provider}"`,
+        `No translation adapter registered for provider "${route.provider}"`,
         { provider: route.provider, model: model.name },
       );
     }
@@ -63,8 +62,6 @@ export class SttProviderRegistry {
       });
     }
 
-    // Keyed by the credential too: rotating a key must not keep serving the
-    // client built with the old one.
     const cacheKey = `${route.provider}:${route.baseUrl ?? ''}:${apiKey.slice(-8)}`;
     const cached = this.cache.get(cacheKey);
     if (cached) return cached;

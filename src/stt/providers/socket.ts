@@ -1,4 +1,6 @@
-import { WebSocket } from 'ws';
+import type { WebSocket as WebSocketClient } from 'ws';
+
+type WebSocketConstructor = typeof WebSocketClient;
 
 import { AiError } from '../../errors.js';
 
@@ -10,6 +12,10 @@ import { AiError } from '../../errors.js';
  * constructor has nowhere to put one. Handing a short-lived provider token to a
  * browser is the alternative, and it is rejected for a different reason: the
  * clock that decides what a session costs must not run on the client.
+ *
+ * It is an optional peer dependency, loaded the first time a live session is
+ * opened: a product that transcribes files and never dictates has no reason to
+ * carry it.
  */
 
 export interface SocketSession {
@@ -27,9 +33,24 @@ export interface OpenSocketOptions {
   context: { provider: string; model: string };
 }
 
-export function openSocket(url: string, options: OpenSocketOptions): Promise<SocketSession> {
+async function loadWebSocket(): Promise<WebSocketConstructor> {
+  try {
+    return (await import('ws')).WebSocket;
+  } catch (cause) {
+    throw new AiError(
+      'invalid_request',
+      'Live transcription needs the optional peer dependency "ws". Add it as a dependency to use a realtime speech model.',
+      { cause },
+    );
+  }
+}
+
+export async function openSocket(url: string, options: OpenSocketOptions): Promise<SocketSession> {
   const { context } = options;
-  const socket = new WebSocket(url, options.protocols ?? [], { headers: options.headers });
+  const WebSocket = await loadWebSocket();
+  const socket: WebSocketClient = new WebSocket(url, options.protocols ?? [], {
+    headers: options.headers,
+  });
 
   const queue: string[] = [];
   let notify: (() => void) | undefined;
