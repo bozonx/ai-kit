@@ -41,6 +41,12 @@ peer-зависимостями, покрытие адаптеров 5% → 87%.
 `callStatusFor`, `chunkText`, аудио-хелперы; подэкспорты `./stt` и `./translate`,
 а `run*`, реестры и `*ExecutionDeps` убраны из публичного API; README в корне пакета.
 
+Перед публикацией (2026-09-21, второй заход): tools, `providerOptions`, эмбеддинги,
+`signalsFor`, `isProviderFault`, `compactHistory`, `splitParallelText`; структурный вывод
+переведён с устаревшего `generateObject` на `generateText` + `Output.object`; адаптер Cloud
+Translation переименован в `google-translate`; `zod` стал peer. Опубликовать не удалось — нет
+логина в npm.
+
 Ниже — исходный план волны 1 и волны 2; волна 2 не закрыта.
 
 **Волна 1 сделана наполовину: основание есть, вызова модели нет.** Ниже — что именно, чтобы
@@ -614,8 +620,9 @@ HTTP-обёртку на библиотеку и обкатать её неде�
 ### Волна 2 — за шагами потребителя
 
 - [ ] `RedisStateStore` на стороне потребителя, circuit breaker и rate limiter поверх `StateStore`
-- [ ] Цикл tool calling со `stopWhen`, механика определения инструментов (`tools/define.ts`)
-- [ ] Сжатие истории (`chat/compaction.ts`)
+- [x] Цикл tool calling: `tools`/`toolChoice`/`maxSteps` → `stopWhen` SDK, `tool` реэкспортирован (2026-09-21)
+- [x] Сжатие истории (`chat/compaction.ts`, перенесено из bloggerdog, 2026-09-21)
+- [x] Эмбеддинги: вид `embedding`, `kit.embed` (2026-09-21)
 - [ ] Эскалация модели по факту неудачи
 - [ ] `smart.strategy` перенесена как чистая функция, режим `free`
 - [x] ~~HTTP-обёртка~~ и ~~n8n-нода~~ — снято: ноды больше нет
