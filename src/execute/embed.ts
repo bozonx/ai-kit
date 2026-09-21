@@ -104,6 +104,7 @@ export async function runEmbed(
 
   const startedAt = deps.clock.now();
   const outcome = await attemptCandidates(deps, candidates, request, {
+    operation: 'embed',
     prepare: candidate =>
       deps.registry.embeddingModel(candidate.model, candidate.route, request.keys),
     run: async ({ client, signal }) => {

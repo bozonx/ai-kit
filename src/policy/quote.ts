@@ -56,11 +56,16 @@ export function quoteCandidates(
 ): CandidateQuote[] {
   return selectCandidates(input, catalog).map(candidate => ({
     candidate,
-    costMicros: quoteOne(candidate, input, usage),
+    costMicros: quoteCandidate(candidate, input, usage),
   }));
 }
 
-function quoteOne(candidate: ModelCandidate, input: PolicyInput, usage: QuoteUsage): number {
+/** Worst-case cost of one candidate already selected. Internal to the package. */
+export function quoteCandidate(
+  candidate: ModelCandidate,
+  input: PolicyInput,
+  usage: QuoteUsage = {},
+): number {
   const { model, route } = candidate;
   const priced = { name: model.name, provider: route.provider };
 

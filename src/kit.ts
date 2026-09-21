@@ -1,7 +1,9 @@
 import type { Catalog } from './catalog/catalog.js';
 import {
   DEFAULT_RETRY_POLICY,
+  planCall,
   runGenerate,
+  type CallPlan,
   runStream,
   type ExecutionDeps,
   type GenerateRequest,
@@ -81,6 +83,13 @@ export interface AiKitOptions {
  */
 export interface AiKit {
   readonly catalog: Catalog;
+  /**
+   * The candidates a request would try and what each could cost, without
+   * calling any. Pass the result back as `plan` on the same request.
+   *
+   * @throws NoSuitableModelError when nothing in the catalog fits.
+   */
+  plan<T = never>(request: GenerateRequest<T>, options?: { stream?: boolean }): CallPlan;
   /** One answer; pass a schema for structured output. */
   generate<T = never>(request: GenerateRequest<T>): Promise<GenerateResult<T>>;
   /** The same call, part by part. */
@@ -138,6 +147,8 @@ export function createAiKit(options: AiKitOptions): AiKit {
 
   return {
     catalog: options.catalog,
+    plan: (request, planOptions) =>
+      planCall(options.catalog, request as GenerateRequest<unknown>, planOptions),
     generate: request => runGenerate(deps, request),
     stream: request => runStream(deps, request),
     transcribe: request => runTranscribe(sttDeps, request),

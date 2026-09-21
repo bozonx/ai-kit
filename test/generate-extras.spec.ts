@@ -304,3 +304,94 @@ describe('isProviderFault', () => {
     expect(isProviderFault('content_filter')).toBe(false);
   });
 });
+
+describe('plan', () => {
+  const planned = Catalog.fromYaml(`
+models:
+  - name: big
+    provider: fake
+    model: big-id
+    tier: standard
+    contextSize: 100000
+    maxOutputTokens: 8000
+    pricing: { version: 'test', inputPerMTok: 1000000, outputPerMTok: 2000000 }
+  - name: small
+    provider: fake
+    model: small-id
+    tier: standard
+    contextSize: 100000
+    maxOutputTokens: 1000
+    pricing: { version: 'test', inputPerMTok: 1000000, outputPerMTok: 4000000 }
+taskClasses:
+  chat: [big, small]
+`);
+
+  it('chooses and quotes the candidates once, capping the output allowance', () => {
+    const kit = createAiKit({ catalog: planned, keys });
+
+    const plan = kit.plan({ policy, messages, maxOutputTokens: 20_000 });
+
+    expect(plan.candidates.map(candidate => candidate.model.name)).toEqual(['big', 'small']);
+    expect(plan.maxOutputTokens).toBe(8000);
+    expect(plan.quotes.map(quote => quote.costMicros)).toEqual([
+      Math.ceil((10 * 1000000 + 8000 * 2000000) / 1_000_000),
+      Math.ceil((10 * 1000000 + 1000 * 4000000) / 1_000_000),
+    ]);
+  });
+
+  it('is what the call tries, and each model gets no more output than it has', async () => {
+    const { factory, seen } = languageModels(modelId => {
+      if (modelId === 'big-id') throw new Error('socket hang up');
+      return {
+        content: [{ type: 'text', text: 'ok' }],
+        finishReason: { unified: 'stop', raw: undefined },
+        usage,
+        warnings: [],
+      };
+    });
+    const kit = createAiKit({
+      catalog: planned,
+      keys,
+      providers: { fake: factory },
+      retry: { maxRetriesPerCandidate: 0 },
+    });
+
+    const request = { policy, messages, maxOutputTokens: 8000 };
+    const result = await kit.generate({ ...request, plan: kit.plan(request) });
+
+    expect(result.model).toBe('small');
+    expect(seen.map(call => [call.modelId, call.options.maxOutputTokens])).toEqual([
+      ['big-id', 8000],
+      ['small-id', 1000],
+    ]);
+  });
+});
+
+describe('failed attempts outside text generation', () => {
+  it('are named after their operation when the call gave no name', async () => {
+    const names: string[] = [];
+    const failing = ({ modelId }: { modelId: string }) =>
+      new MockEmbeddingModelV4({
+        provider: 'fake',
+        modelId,
+        maxEmbeddingsPerCall: 100,
+        doEmbed: () => Promise.reject(new Error('socket hang up')),
+      });
+    const kit = createAiKit({
+      catalog,
+      keys,
+      embeddingProviders: { fake: failing },
+      retry: { maxRetriesPerCandidate: 0 },
+      attempts: { failed: failure => void names.push(failure.name) },
+    });
+
+    await kit
+      .embed({
+        policy: { mode: 'manual', taskClass: 'embed', requestedModel: 'vectors' },
+        values: ['x'],
+      })
+      .catch(() => undefined);
+
+    expect(names).toEqual(['embed']);
+  });
+});

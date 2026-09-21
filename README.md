@@ -182,6 +182,21 @@ const quotes = quoteCandidates(policy, kit.catalog, { characters: 12_000 });
 const hold = Math.max(0, ...quotes.map(quote => quote.costMicros));
 ```
 
+For a language-model call, `kit.plan(request)` does the selection once and
+returns the candidates, their quotes and the output allowance capped at the
+first candidate's limit. Hand it back as `plan` on the same request, and the
+call tries exactly the candidates the hold was sized for:
+
+```ts
+const plan = kit.plan(request);
+await reserve(Math.max(0, ...plan.quotes.map(quote => quote.costMicros)));
+const result = await kit.generate({ ...request, plan, maxOutputTokens: plan.maxOutputTokens });
+```
+
+Each attempt is sent at most the output its own model can produce, so a
+fallback to a model with a smaller limit is not refused for a number chosen for
+another one.
+
 ## Streaming
 
 `StreamPart` is one vocabulary for both ends of the connection —

@@ -111,6 +111,8 @@ export async function attemptCandidates<C, R>(
   candidates: ModelCandidate[],
   request: AttemptRequest,
   steps: {
+    /** Names the call in traces when the request gave no `name`. Defaults to `generate`. */
+    operation?: string;
     prepare: (candidate: ModelCandidate) => Promise<C>;
     run: (params: { client: C; candidate: ModelCandidate; signal: AbortSignal }) => Promise<R>;
   },
@@ -121,6 +123,7 @@ export async function attemptCandidates<C, R>(
   };
   const deadline = deps.clock.now() + retry.totalTimeoutMs;
   const failures: CandidateFailure[] = [];
+  const name = request.name ?? steps.operation ?? 'generate';
   let attempts = 0;
 
   for (const candidate of candidates) {
@@ -162,7 +165,7 @@ export async function attemptCandidates<C, R>(
 
         deps.attempts?.failed({
           ...(request.traceId === undefined ? {} : { traceId: request.traceId }),
-          name: request.name ?? 'generate',
+          name,
           provider: candidate.route.provider,
           model: candidate.model.name,
           ...(routeId === undefined ? {} : { routeId }),
@@ -172,7 +175,7 @@ export async function attemptCandidates<C, R>(
 
         deps.trace.span({
           traceId: request.traceId,
-          name: `${request.name ?? 'generate'}.attempt-failed`,
+          name: `${name}.attempt-failed`,
           startedAt: deps.clock.now(),
           endedAt: deps.clock.now(),
           metadata: {

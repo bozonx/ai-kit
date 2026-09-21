@@ -86,6 +86,11 @@ belong to a consumer had been written into the library.
 - **`splitParallelText`** in `/translate` — source and translation cut into
   corresponding pairs at paragraphs, lines or sentences, never through a word.
 - `demotedRoutes` on the speech and translation policy inputs.
+- **`kit.plan(request)`** — candidates, quotes and a capped output allowance from
+  one selection; `plan` on the request makes the call use it.
+- Each attempt's `maxOutputTokens` is capped at its own model's limit.
+- Failed attempts of speech, translation and embedding calls are named
+  `transcribe`, `translate` and `embed` in traces, not `generate`.
 
 ### Added
 

@@ -159,6 +159,7 @@ export type {
   CallAccounting,
   ProviderOptions,
   ToolActivity,
+  CallPlan,
 } from './execute/run.js';
 
 export type {

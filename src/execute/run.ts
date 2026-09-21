@@ -12,7 +12,13 @@ import type { z } from 'zod';
 import type { Catalog } from '../catalog/catalog.js';
 import { calculateCost, estimateTokens } from '../catalog/pricing.js';
 import { AiError, StreamInterruptedError, callStatusFor } from '../errors.js';
-import { selectCandidates, type ModelCandidate, type PolicyInput } from '../policy/policy.js';
+import {
+  selectCandidates,
+  type ModelCandidate,
+  type PolicyInput,
+  type PolicySignals,
+} from '../policy/policy.js';
+import { quoteCandidate, type CandidateQuote } from '../policy/quote.js';
 import { signalsFor } from '../policy/signals.js';
 import type { CallStatus, RoutedBy, TokenUsage, UsageSink } from '../ports.js';
 import type { ProviderRegistry } from '../providers/registry.js';
@@ -67,6 +73,33 @@ interface CommonRequest extends AttemptRequest {
    * Defaults to 1, which returns the tool calls without a follow-up answer.
    */
   maxSteps?: number;
+  /**
+   * A plan from `AiKit.plan` for this same request. Saves choosing the
+   * candidates a second time, and guarantees the call tries exactly the ones
+   * the caller already quoted and reserved for.
+   */
+  plan?: CallPlan;
+}
+
+/**
+ * The call, decided but not made: which candidates, in what order, at what
+ * worst-case cost.
+ *
+ * A consumer that reserves budget needs the quotes before the call and the call
+ * needs the candidates; working both out from one selection is what keeps the
+ * hold and the attempt about the same models.
+ */
+export interface CallPlan {
+  /** The signals the candidates were chosen on, the request's own included. */
+  signals: PolicySignals;
+  candidates: ModelCandidate[];
+  /** Every candidate with its worst-case cost, in the same order. */
+  quotes: CandidateQuote[];
+  /**
+   * The requested output allowance capped at the first candidate's limit, or
+   * that limit when none was requested.
+   */
+  maxOutputTokens: number | undefined;
 }
 
 export interface GenerateRequest<T = never> extends CommonRequest {
@@ -264,37 +297,81 @@ async function recordUsage(
   });
 }
 
+/** The signals a request carries by what it asks for, over what the caller said. */
+function effectiveSignals(request: GenerateRequest<unknown>, stream: boolean): PolicySignals {
+  const signals = request.policy.signals;
+  return {
+    ...signals,
+    ...(stream
+      ? { needsStreaming: true }
+      : { needsStructuredOutput: signals.needsStructuredOutput ?? Boolean(request.schema) }),
+    needsTools: signals.needsTools ?? hasTools(request),
+    maxOutputTokens: signals.maxOutputTokens ?? request.maxOutputTokens,
+  };
+}
+
+/**
+ * Chooses and quotes the candidates for a request without calling any.
+ *
+ * @throws NoSuitableModelError when nothing in the catalog fits the request.
+ */
+export function planCall(
+  catalog: Catalog,
+  request: GenerateRequest<unknown>,
+  options: { stream?: boolean } = {},
+): CallPlan {
+  const policy = { ...request.policy, signals: effectiveSignals(request, options.stream ?? false) };
+  const candidates = selectCandidates(policy, catalog);
+  const limit = candidates[0]?.model.maxOutputTokens;
+  const requested = request.maxOutputTokens;
+  return {
+    signals: policy.signals,
+    candidates,
+    quotes: candidates.map(candidate => ({
+      candidate,
+      costMicros: quoteCandidate(candidate, policy),
+    })),
+    maxOutputTokens:
+      requested === undefined
+        ? limit
+        : limit === undefined
+          ? requested
+          : Math.min(requested, limit),
+  };
+}
+
+/**
+ * The output allowance for one candidate: what was asked, never more than the
+ * model can produce. A fallback to a model with a smaller limit would
+ * otherwise be refused by the provider for a number nobody chose for it.
+ */
+function outputFor(candidate: ModelCandidate, requested: number | undefined): number | undefined {
+  const limit = candidate.model.maxOutputTokens;
+  if (requested === undefined || limit === undefined) return requested;
+  return Math.min(requested, limit);
+}
+
 /** One answer, optionally validated against a schema. */
 export async function runGenerate<T = never>(
   deps: ExecutionDeps,
   request: GenerateRequest<T>,
 ): Promise<GenerateResult<T>> {
-  const candidates = selectCandidates(
-    {
-      ...request.policy,
-      signals: {
-        ...request.policy.signals,
-        needsStructuredOutput:
-          request.policy.signals.needsStructuredOutput ?? Boolean(request.schema),
-        needsTools: request.policy.signals.needsTools ?? hasTools(request),
-        maxOutputTokens: request.policy.signals.maxOutputTokens ?? request.maxOutputTokens,
-      },
-    },
-    deps.catalog,
-  );
+  const candidates =
+    request.plan?.candidates ??
+    planCall(deps.catalog, request as GenerateRequest<unknown>).candidates;
 
   const startedAt = deps.clock.now();
 
   const outcome = await attemptCandidates(deps, candidates, request, {
     prepare: candidate =>
       deps.registry.languageModel(candidate.model, candidate.route, request.keys),
-    run: async ({ client: model, signal }) => {
+    run: async ({ client: model, candidate, signal }) => {
       const common = {
         model,
         system: request.system,
         messages: request.messages,
         temperature: request.temperature,
-        maxOutputTokens: request.maxOutputTokens,
+        maxOutputTokens: outputFor(candidate, request.maxOutputTokens),
         abortSignal: signal,
         // The SDK retries too, and two retry loops multiply: the time budget
         // stops meaning anything and `attempts` stops matching reality. The
@@ -365,18 +442,8 @@ export async function* runStream(
   deps: ExecutionDeps,
   request: StreamRequest,
 ): AsyncGenerator<StreamPart, void, undefined> {
-  const candidates = selectCandidates(
-    {
-      ...request.policy,
-      signals: {
-        ...request.policy.signals,
-        needsStreaming: true,
-        needsTools: request.policy.signals.needsTools ?? hasTools(request),
-        maxOutputTokens: request.policy.signals.maxOutputTokens ?? request.maxOutputTokens,
-      },
-    },
-    deps.catalog,
-  );
+  const candidates =
+    request.plan?.candidates ?? planCall(deps.catalog, request, { stream: true }).candidates;
 
   const startedAt = deps.clock.now();
   let emitted = false;
@@ -406,7 +473,7 @@ export async function* runStream(
           system: request.system,
           messages: request.messages,
           temperature: request.temperature,
-          maxOutputTokens: request.maxOutputTokens,
+          maxOutputTokens: outputFor(candidate, request.maxOutputTokens),
           abortSignal: signal,
           maxRetries: 0,
           ...sdkExtras(request),
