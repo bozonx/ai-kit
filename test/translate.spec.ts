@@ -6,6 +6,7 @@ import { createAiKit } from '../src/kit.js';
 import { calculateMtCost, estimateMtCost } from '../src/catalog/pricing.js';
 import type { UsageEvent } from '../src/ports.js';
 import { googleCloudTranslationProvider } from '../src/translate/providers/google-cloud.js';
+import { deeplTranslationProvider } from '../src/translate/providers/deepl.js';
 import type { TranslationProvider, TranslationProviderFactory } from '../src/translate/types.js';
 
 /**
@@ -289,5 +290,71 @@ describe('the Google Cloud Translation adapter', () => {
 
     expect(await provider.translate({ ...request, texts: [] })).toEqual({ translations: [] });
     expect(called).toBe(false);
+  });
+});
+
+describe('the DeepL translation adapter', () => {
+  const original = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = original;
+  });
+
+  const request = {
+    modelId: 'quality_optimized',
+    texts: ['hello'],
+    targetLanguage: 'en_US',
+    sourceLanguage: 'auto',
+    format: 'html' as const,
+    signal: AbortSignal.timeout(5_000),
+  };
+
+  it('uses header authentication and DeepL language and markup fields', async () => {
+    let url = '';
+    let init: RequestInit | undefined;
+    globalThis.fetch = ((nextUrl: string, nextInit: RequestInit) => {
+      url = nextUrl;
+      init = nextInit;
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            translations: [{ text: '<p>Hello</p>', detected_source_language: 'ES' }],
+          }),
+        ),
+      );
+    }) as unknown as typeof globalThis.fetch;
+
+    const result = await deeplTranslationProvider({
+      apiKey: 'secret',
+      baseUrl: 'https://api-free.deepl.com/v2/translate',
+    }).translate(request);
+
+    expect(url).toBe('https://api-free.deepl.com/v2/translate');
+    expect(new Headers(init?.headers).get('Authorization')).toBe('DeepL-Auth-Key secret');
+    expect(JSON.parse(String(init?.body))).toEqual({
+      text: ['hello'],
+      target_lang: 'EN-US',
+      tag_handling: 'html',
+      model_type: 'quality_optimized',
+    });
+    expect(result).toEqual({
+      translations: ['<p>Hello</p>'],
+      detectedSourceLanguage: 'es',
+    });
+  });
+
+  it('refuses a short result and reports provider errors', async () => {
+    globalThis.fetch = (() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ translations: [] })),
+      )) as unknown as typeof fetch;
+    const provider = deeplTranslationProvider({ apiKey: 'secret' });
+    await expect(provider.translate(request)).rejects.toThrow(/0 translations for 1 strings/);
+
+    globalThis.fetch = (() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ message: 'Quota exceeded' }), { status: 456 }),
+      )) as unknown as typeof fetch;
+    const error = await provider.translate(request).catch((caught: unknown) => caught);
+    expect(isAiError(error)).toBe(true);
   });
 });

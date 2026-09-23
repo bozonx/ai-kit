@@ -4,6 +4,7 @@ import { AiError } from '../errors.js';
 import type { KeyProvider, Transport } from '../ports.js';
 import { ClientCache, keyFor, type KeyOverrides } from '../providers/client-cache.js';
 import { googleCloudTranslationProvider } from './providers/google-cloud.js';
+import { deeplTranslationProvider } from './providers/deepl.js';
 import type { TranslationProvider, TranslationProviderFactory } from './types.js';
 
 /**
@@ -15,6 +16,7 @@ import type { TranslationProvider, TranslationProviderFactory } from './types.js
  */
 
 const BUILTIN_FACTORIES: Readonly<Record<string, TranslationProviderFactory>> = {
+  deepl: deeplTranslationProvider,
   'google-translate': googleCloudTranslationProvider,
 };
 

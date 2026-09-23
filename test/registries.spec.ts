@@ -153,6 +153,7 @@ describe('the speech and translation registries', () => {
     // Not `google`: that id is Gemini's, and the key provider is asked for a
     // key by provider id — Cloud Translation is a different credential.
     expect(new MtProviderRegistry({ keys }).has('google-translate')).toBe(true);
+    expect(new MtProviderRegistry({ keys }).has('deepl')).toBe(true);
     expect(new MtProviderRegistry({ keys }).has('google')).toBe(false);
   });
 });

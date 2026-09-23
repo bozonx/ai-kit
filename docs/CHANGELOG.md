@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Added the built-in `deepl` machine-translation adapter, including Free API
+  endpoint support through a catalog `baseUrl`.
+- Added `runTranslationPipeline`, a provider-neutral deterministic quality gate
+  with at most one paid repair pass.
+
 All notable changes to this project are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),

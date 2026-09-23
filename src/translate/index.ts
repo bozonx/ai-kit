@@ -8,6 +8,7 @@
  */
 
 export { googleCloudTranslationProvider } from './providers/google-cloud.js';
+export { deeplTranslationProvider } from './providers/deepl.js';
 
 export type {
   TranslationProvider,
@@ -35,6 +36,16 @@ export {
   detectTranslationProblems,
   renderProblemsForPrompt,
 } from './quality.js';
+
+export { runTranslationPipeline } from './pipeline.js';
+export type {
+  TranslationPassResult,
+  TranslationPipelineInput,
+  TranslationPipelineResult,
+  TranslationQualityGate,
+  TranslationQualityReport,
+  TranslationRepairInput,
+} from './pipeline.js';
 export type {
   TranslationProblem,
   TranslationProblemCode,
