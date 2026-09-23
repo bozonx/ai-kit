@@ -61,4 +61,22 @@ describe('translation quality pipeline', () => {
     expect(result.translation).toBe('Привет.');
     expect(result.quality.repairFailed).toBe(true);
   });
+
+  it('uses a source language detected by the first pass', async () => {
+    const repair = jest.fn(() => Promise.resolve({ translation: 'Still English.' }));
+    const result = await runTranslationPipeline({
+      source: 'A long English paragraph that is deliberately more than forty characters.',
+      targetLanguage: 'en',
+      qualityGate: 'on_problems',
+      firstPass: () =>
+        Promise.resolve({
+          translation: 'A long English paragraph that is deliberately more than forty characters.',
+          detectedSourceLanguage: 'en',
+        }),
+      repair,
+    });
+
+    expect(repair).not.toHaveBeenCalled();
+    expect(result.quality.problems).toEqual([]);
+  });
 });

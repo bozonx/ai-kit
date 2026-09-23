@@ -131,3 +131,15 @@ describe('renderProblemsForPrompt', () => {
     );
   });
 });
+
+describe('empty translation output', () => {
+  it('reports an empty result for non-empty source text', () => {
+    expect(
+      codes({ source: 'Hello.', translated: '  ', sourceLang: 'en', targetLang: 'ru' }),
+    ).toEqual(['empty_output']);
+  });
+
+  it('accepts empty output for empty source text', () => {
+    expect(codes({ source: '  ', translated: '', targetLang: 'ru' })).toEqual([]);
+  });
+});

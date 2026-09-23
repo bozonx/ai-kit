@@ -17,6 +17,8 @@
 import { findGlossaryViolations, type GlossaryEntry } from './glossary.js';
 
 export const TRANSLATION_PROBLEM_CODES = [
+  /** The provider returned no translation for non-empty source text. */
+  'empty_output',
   /** Characters from a writing system the target language does not use. */
   'foreign_script',
   /** Long stretches came back exactly as they went in. */
@@ -361,6 +363,9 @@ function detectGlossary(input: TranslationQualityInput): TranslationProblem | nu
  * What the policy decides is only whether a repair pass is paid for.
  */
 export function detectTranslationProblems(input: TranslationQualityInput): TranslationProblem[] {
+  if (input.source.trim() && !input.translated.trim()) {
+    return [{ code: 'empty_output', detail: 'the translation is empty' }];
+  }
   if (!input.translated.trim()) return [];
   const detectors = [
     detectForeignScript,
@@ -378,6 +383,7 @@ export function detectTranslationProblems(input: TranslationQualityInput): Trans
 }
 
 const PROBLEM_INSTRUCTIONS: Record<TranslationProblemCode, string> = {
+  empty_output: 'the translation is empty',
   foreign_script: 'characters from a writing system the target language does not use',
   untranslated: 'passages left in the source language',
   length_gap: 'content added or dropped relative to the source',

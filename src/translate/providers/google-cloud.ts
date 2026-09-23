@@ -82,13 +82,23 @@ class GoogleCloudTranslationProvider implements TranslationProvider {
     // A short list is worse than an error: the caller would pair translations
     // with the wrong sources and never notice, because every string is
     // plausible on its own.
-    if (
-      translations.length !== request.texts.length ||
-      translations.some(item => item.translatedText === undefined)
-    ) {
+    if (translations.length !== request.texts.length) {
       throw new AiError(
         'invalid_output',
         `Google Cloud Translation returned ${String(translations.length)} translations for ${String(request.texts.length)} strings`,
+        context,
+      );
+    }
+    if (
+      translations.some(
+        (item, index) =>
+          item.translatedText === undefined ||
+          (request.texts[index]?.trim() !== '' && item.translatedText.trim() === ''),
+      )
+    ) {
+      throw new AiError(
+        'invalid_output',
+        'Google Cloud Translation returned an empty translation',
         context,
       );
     }

@@ -271,6 +271,12 @@ describe('the Google Cloud Translation adapter', () => {
     await expect(provider.translate(request)).rejects.toThrow(/0 translations for 1 strings/);
   });
 
+  it('refuses an empty translation for non-empty input', async () => {
+    respond(200, { data: { translations: [{ translatedText: '' }] } });
+
+    await expect(provider.translate(request)).rejects.toThrow(/empty translation/);
+  });
+
   it('classifies a quota refusal as retryable and a bad request as not', async () => {
     respond(429, { error: { message: 'quota' } });
     const rateLimited = await provider.translate(request).catch((error: unknown) => error);
@@ -356,5 +362,16 @@ describe('the DeepL translation adapter', () => {
       )) as unknown as typeof fetch;
     const error = await provider.translate(request).catch((caught: unknown) => caught);
     expect(isAiError(error)).toBe(true);
+  });
+
+  it('refuses an empty translation for non-empty input', async () => {
+    globalThis.fetch = (() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ translations: [{ text: '' }] })),
+      )) as unknown as typeof fetch;
+
+    await expect(deeplTranslationProvider({ apiKey: 'secret' }).translate(request)).rejects.toThrow(
+      /empty translation/,
+    );
   });
 });

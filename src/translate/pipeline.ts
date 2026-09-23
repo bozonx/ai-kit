@@ -15,6 +15,8 @@ export interface TranslationQualityReport {
 
 export interface TranslationPassResult {
   translation: string;
+  /** A provider-detected source language, when the caller did not specify one. */
+  detectedSourceLanguage?: string;
 }
 
 export interface TranslationRepairInput<TFirst extends TranslationPassResult> {
@@ -63,11 +65,12 @@ export async function runTranslationPipeline<
   input: TranslationPipelineInput<TFirst, TRepair>,
 ): Promise<TranslationPipelineResult<TFirst, TRepair>> {
   const first = await input.firstPass();
+  const sourceLanguage = input.sourceLanguage ?? first.detectedSourceLanguage;
   const check = (translated: string) =>
     detectTranslationProblems({
       source: input.source,
       translated,
-      sourceLang: input.sourceLanguage,
+      sourceLang: sourceLanguage,
       targetLang: input.targetLanguage,
       glossary: input.glossary,
     });

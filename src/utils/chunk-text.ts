@@ -19,7 +19,7 @@ export function chunkText(text: string, maxChars: number): string[] {
   const chunks: string[] = [];
   let rest = text;
   while (rest.length > maxChars) {
-    const window = rest.slice(0, maxChars + 1);
+    const window = rest.slice(0, maxChars);
     const boundary = Math.max(
       window.lastIndexOf('\n\n'),
       window.lastIndexOf('\n'),

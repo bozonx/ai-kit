@@ -74,15 +74,21 @@ class DeepLTranslationProvider implements TranslationProvider {
     }
 
     const translations = payload?.translations ?? [];
-    if (
-      translations.length !== request.texts.length ||
-      translations.some(item => item.text === undefined)
-    ) {
+    if (translations.length !== request.texts.length) {
       throw new AiError(
         'invalid_output',
         `DeepL returned ${String(translations.length)} translations for ${String(request.texts.length)} strings`,
         context,
       );
+    }
+    if (
+      translations.some(
+        (item, index) =>
+          item.text === undefined ||
+          (request.texts[index]?.trim() !== '' && item.text.trim() === ''),
+      )
+    ) {
+      throw new AiError('invalid_output', 'DeepL returned an empty translation', context);
     }
 
     return {

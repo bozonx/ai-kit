@@ -3,6 +3,12 @@ import { describe, it, expect } from '@jest/globals';
 import { chunkText } from '../src/utils/chunk-text.js';
 
 describe('chunkText', () => {
+  it('never returns a chunk longer than the requested maximum', () => {
+    const chunks = chunkText(`${'word '.repeat(1_000)}tail`, 100);
+
+    expect(chunks.every(chunk => chunk.length <= 100)).toBe(true);
+    expect(chunks.join('')).toBe(`${'word '.repeat(1_000)}tail`);
+  });
   it('leaves short text alone', () => {
     expect(chunkText('short', 10)).toEqual(['short']);
   });
