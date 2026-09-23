@@ -1,18 +1,30 @@
 # Changelog
 
-## Unreleased
-
-- Added the built-in `deepl` machine-translation adapter, including Free API
-  endpoint support through a catalog `baseUrl`.
-- Added `runTranslationPipeline`, a provider-neutral deterministic quality gate
-  with at most one paid repair pass.
-
 All notable changes to this project are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+
+## [0.5.0] - 2026-09-23
+
+### Added
+
+- The built-in `deepl` machine-translation adapter, including Free API endpoint
+  support through a catalog `baseUrl`.
+- `runTranslationPipeline`, a provider-neutral deterministic quality gate with
+  at most one paid repair pass. A source language detected by the first pass is
+  used by its checks when the caller did not specify one.
+- `empty_output`, reported when a provider returns no translation for non-empty
+  source text.
+
+### Changed
+
+- Google Cloud Translation and DeepL reject empty translations as
+  `invalid_output` instead of returning an apparently successful result.
+- `chunkText` now strictly observes its documented maximum at a boundary that
+  falls exactly at the limit.
 
 ## [0.4.0] - 2026-09-21
 

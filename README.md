@@ -428,13 +428,23 @@ words to fit a request limit.
   proportionally — on a boundary, never through a word.
 - **`glossary.ts`** — a binding glossary, applied three times and differently
   each time: only the terms that occur in the text go into the prompt, a
-  "do not translate" term is put back by replacement rather than asked for
-  again, and a violated glossary is found deterministically.
+  "do not translate" term whose spelling only changed by case is restored
+  deterministically, and any other violated term is reported for repair. A
+  caller that needs an absolute byte-for-byte guarantee should protect those
+  terms before sending text to a machine-translation engine.
 - **`quality.ts`** — deterministic detectors that run on every translation:
-  passages left in the source language, lost links and placeholders, a
-  structure that no longer matches, looping, truncation, an unexpected writing
-  system. No model takes part, which is what makes them free to run and
-  explainable to whoever is shown the result.
+  an empty result, passages left in the source language, lost links and
+  placeholders, a structure that no longer matches, looping, truncation, an
+  unexpected writing system. No model takes part, which is what makes them free
+  to run and explainable to whoever is shown the result.
+- **`runTranslationPipeline`** — one first pass, deterministic checks and at
+  most one optional repair pass. When the first pass detects its source
+  language, the pipeline uses it for same-language checks unless the caller
+  supplied a source language explicitly.
+
+`chunkText` limits each returned string; it does not split one provider call
+into several requests. Consumers must batch or send the chunks separately when
+the provider limits the total request body or number of strings.
 
 ## Running outside Node
 
