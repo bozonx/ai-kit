@@ -3,6 +3,7 @@ import { kindFromStatus } from '../../execute/classify.js';
 import type { FetchFunction } from '../../ports.js';
 import { platformFetch } from '../../transport/platform.js';
 import type { TranscriptSegment, WordTiming } from '../types.js';
+import type { z } from 'zod';
 
 /**
  * The little that every speech adapter needs and the AI SDK does not provide.
@@ -28,6 +29,20 @@ export function jsonRequester(send: FetchFunction = platformFetch): JsonRequest 
   return (url, init, context) => requestJson(send, url, init, context);
 }
 
+/** Refuses a successful HTTP response whose wire shape cannot be trusted. */
+export function parseProviderResponse<T>(
+  schema: z.ZodType<T>,
+  value: unknown,
+  context: HttpContext,
+): T {
+  const parsed = schema.safeParse(value);
+  if (parsed.success) return parsed.data;
+  throw new AiError('provider_unavailable', `${context.provider} returned an invalid response`, {
+    ...context,
+    cause: parsed.error,
+  });
+}
+
 async function requestJson<T>(
   send: FetchFunction,
   url: string,
@@ -45,15 +60,16 @@ async function requestJson<T>(
     });
   }
 
-  const body = await response.text();
-
   if (!response.ok) {
+    const body = await limitedResponseText(response, 64 * 1024);
     throw new AiError(
       kindFromStatus(response.status, body),
       `${context.provider} returned ${response.status}: ${truncate(body)}`,
       { ...context, status: response.status },
     );
   }
+
+  const body = await response.text();
 
   try {
     return JSON.parse(body) as T;
@@ -63,6 +79,31 @@ async function requestJson<T>(
       cause,
     });
   }
+}
+
+async function limitedResponseText(response: Response, maxBytes: number): Promise<string> {
+  if (!response.body) return response.text();
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let total = 0;
+  let text = '';
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    const remaining = maxBytes - total;
+    if (remaining <= 0) {
+      await reader.cancel();
+      break;
+    }
+    const slice = value.byteLength > remaining ? value.subarray(0, remaining) : value;
+    text += decoder.decode(slice, { stream: true });
+    total += slice.byteLength;
+    if (value.byteLength > remaining) {
+      await reader.cancel();
+      break;
+    }
+  }
+  return text + decoder.decode();
 }
 
 function isAbort(error: unknown): boolean {

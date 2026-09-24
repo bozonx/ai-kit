@@ -101,6 +101,9 @@ export interface ProviderStreamRequest {
   /** Sample rate of the PCM the caller is about to send, in hertz. */
   sampleRate: number;
   audio: AsyncIterable<AudioChunk>;
+  /** Covers only opening the provider connection and may expire afterwards. */
+  connectSignal?: AbortSignal;
+  /** Covers the lifetime of the established session. */
   signal: AbortSignal;
 }
 

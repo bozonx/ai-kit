@@ -33,6 +33,7 @@ export const wsSocketOpener: SocketOpener = async (url, options) => {
     headers: options.headers,
   });
 
+  const connectSignal = options.connectSignal ?? options.signal;
   const onAbort = (): void => socket.close(1000);
   const queue = createMessageQueue(() => options.signal.removeEventListener('abort', onAbort));
 
@@ -70,9 +71,22 @@ export const wsSocketOpener: SocketOpener = async (url, options) => {
   };
 
   return new Promise((resolve, reject) => {
-    socket.once('open', () => resolve(session));
-    socket.once('error', reject);
-    if (options.signal.aborted) {
+    const onConnectAbort = (): void => {
+      socket.close(1000);
+      reject(new AiError('aborted', 'Opening the live session was aborted'));
+    };
+    const finishOpening = (): void => connectSignal.removeEventListener('abort', onConnectAbort);
+    socket.once('open', () => {
+      finishOpening();
+      resolve(session);
+    });
+    socket.once('error', error => {
+      finishOpening();
+      reject(error);
+    });
+    connectSignal.addEventListener('abort', onConnectAbort, { once: true });
+    if (connectSignal.aborted || options.signal.aborted) {
+      finishOpening();
       socket.close(1000);
       reject(new AiError('aborted', 'The live session was aborted'));
     }

@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 - Validate PCM16 sample alignment, sample rates, and RIFF size limits before creating WAV files.
+- Keep live transcription sessions alive after their connection deadline, while still applying the
+  deadline to opening the provider socket.
+- Propagate audio-source failures from live providers instead of turning them into a clean finish.
+- Validate STT provider response shapes and reject invalid durations instead of recording zero-cost
+  successful calls. In-memory audio uses a conservative duration estimate when a provider omits it.
+- Forward the requested language to AssemblyAI live transcription.
 
 ## [0.5.0] - 2026-09-23
 

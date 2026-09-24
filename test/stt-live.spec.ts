@@ -196,6 +196,29 @@ describe.each(openers)('openSocket over %s', (_name, opener) => {
     expect(messages).toEqual(['one']);
     expect(isAiError(error) && error.kind).toBe('aborted');
   });
+
+  it('detaches the connection deadline after the socket opens', async () => {
+    const connect = new AbortController();
+    const lifetime = new AbortController();
+    const url = await serve(socket => {
+      setTimeout(() => {
+        socket.send('late');
+        socket.close(1000);
+      }, 20);
+    });
+
+    const session = await openSocket(url, {
+      signal: connect.signal,
+      lifetimeSignal: lifetime.signal,
+      context: { provider: 'test', model: 'test' },
+      openSocket: opener,
+    });
+    connect.abort();
+
+    const messages: string[] = [];
+    for await (const message of session.messages) messages.push(message);
+    expect(messages).toEqual(['late']);
+  });
 });
 
 describe('the Deepgram live session', () => {

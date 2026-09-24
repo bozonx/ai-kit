@@ -13,6 +13,7 @@ import {
 import { isPriced, quoteCandidate, type CandidatePlan } from '../policy/quote.js';
 import type { CallStatus, UsageSink } from '../ports.js';
 import { assertSttCapabilities } from './policy.js';
+import { estimateAudioSeconds } from './audio.js';
 import type { SttProviderRegistry } from './registry.js';
 import type {
   AudioChunk,
@@ -209,12 +210,28 @@ export async function runTranscribe(
       // model, and the option the caller asked for is not automatically one it
       // has. A pinned model that cannot do the job fails here, loudly.
       assertSttCapabilities(candidate.model, options, false);
-      return client.transcribe({
+      const result = await client.transcribe({
         modelId: candidate.route.model,
         source: request.source,
         options,
         signal,
       });
+      const estimatedAudioSeconds =
+        'data' in request.source && request.source.data instanceof Uint8Array
+          ? estimateAudioSeconds(request.source.data.byteLength, request.source.mimeType)
+          : undefined;
+      const audioSeconds =
+        Number.isFinite(result.audioSeconds) && result.audioSeconds > 0
+          ? result.audioSeconds
+          : estimatedAudioSeconds;
+      if (audioSeconds === undefined || !Number.isFinite(audioSeconds) || audioSeconds <= 0) {
+        throw new AiError(
+          'provider_unavailable',
+          `Provider "${candidate.route.provider}" did not report a valid audio duration`,
+          { provider: candidate.route.provider, model: candidate.model.name },
+        );
+      }
+      return { ...result, audioSeconds };
     },
   });
 
@@ -267,7 +284,8 @@ export async function* runTranscribeStream(
         options,
         sampleRate,
         audio: request.audio,
-        signal,
+        connectSignal: signal,
+        signal: request.abortSignal ?? new AbortController().signal,
       });
     },
   });

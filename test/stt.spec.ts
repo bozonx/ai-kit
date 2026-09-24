@@ -2,7 +2,7 @@ import { describe, it, expect } from '@jest/globals';
 
 import { Catalog } from '../src/catalog/catalog.js';
 import { calculateSttCost, estimateSttCost } from '../src/catalog/pricing.js';
-import { CatalogError, AiError } from '../src/errors.js';
+import { CatalogError, AiError, isAiError } from '../src/errors.js';
 import { createAiKit } from '../src/kit.js';
 import { selectCandidates } from '../src/policy/policy.js';
 import type { UsageEvent } from '../src/ports.js';
@@ -291,6 +291,43 @@ describe('running a transcription', () => {
     expect(result.text).toBe('second try');
   });
 
+  it('estimates in-memory audio when the provider omits its duration', async () => {
+    const kit = kitWith(
+      fakeProvider({
+        transcribe: () => Promise.resolve({ text: 'hello', segments: [], audioSeconds: 0 }),
+      }),
+      [],
+    );
+
+    const result = await kit.transcribe({
+      policy: { mode: 'auto', taskClass: 'transcription' },
+      options: { language: 'en' },
+      source: { data: new Uint8Array(32_000), mimeType: 'audio/wav' },
+    });
+
+    expect(result.audioSeconds).toBe(1);
+    expect(result.costMicros).toBe(10);
+  });
+
+  it('rejects an unmeasured URL instead of recording a free success', async () => {
+    const kit = kitWith(
+      fakeProvider({
+        transcribe: () => Promise.resolve({ text: 'hello', segments: [], audioSeconds: 0 }),
+      }),
+      [],
+    );
+
+    const error = await kit
+      .transcribe({
+        policy: { mode: 'manual', taskClass: 'transcription', requestedModel: 'cheap' },
+        options: { language: 'en' },
+        source: { url: 'https://storage.test/audio.opus' },
+      })
+      .catch((caught: unknown) => caught);
+
+    expect(isAiError(error) && error.kind).toBe('no_candidates');
+  });
+
   it('refuses a task class that is not about speech', async () => {
     const kit = kitWith(fakeProvider({}), []);
 
@@ -346,6 +383,41 @@ describe('running a live session', () => {
     const finals = parts.filter(part => part.type === 'final');
     expect(finals.map(part => part.segment.index)).toEqual([0, 1]);
     expect(events[0]).toMatchObject({ status: 'ok' });
+  });
+
+  it('uses the request deadline only while opening the live session', async () => {
+    let connectionSignal: AbortSignal | undefined;
+    let lifetimeSignal: AbortSignal | undefined;
+    const kit = kitWith(
+      () => ({
+        transcribe: () => Promise.reject(new AiError('invalid_request', 'batch only')),
+        transcribeStream: request => {
+          connectionSignal = request.connectSignal;
+          lifetimeSignal = request.signal;
+          return Promise.resolve(
+            (async function* (): AsyncGenerator<SttStreamEvent> {
+              await new Promise(resolve => setTimeout(resolve, 20));
+              yield { type: 'final', segment: { startMs: 0, endMs: 10, text: 'Still open' } };
+            })(),
+          );
+        },
+      }),
+      [],
+    );
+
+    const parts: TranscriptPart[] = [];
+    for await (const part of kit.transcribeStream({
+      policy: { mode: 'auto', taskClass: 'dictation' },
+      options: { language: 'en' },
+      totalTimeoutMs: 5,
+      audio,
+    })) {
+      parts.push(part);
+    }
+
+    expect(connectionSignal?.aborted).toBe(true);
+    expect(lifetimeSignal?.aborted).toBe(false);
+    expect(parts.some(part => part.type === 'final')).toBe(true);
   });
 
   it('bills and reports a session the provider dropped mid-sentence', async () => {

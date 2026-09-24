@@ -1,4 +1,5 @@
 import { AiError } from '../../errors.js';
+import { z } from 'zod';
 import type {
   ProviderTranscribeRequest,
   SttProvider,
@@ -7,7 +8,7 @@ import type {
   TranscriptionResult,
   WordTiming,
 } from '../types.js';
-import { jsonRequester } from './http.js';
+import { jsonRequester, parseProviderResponse } from './http.js';
 
 /**
  * Any server that speaks OpenAI's `/audio/transcriptions`.
@@ -39,18 +40,52 @@ export interface OpenAiCompatibleSttPreset<R extends VerboseTranscription> {
 }
 
 const toMs = (seconds: number): number => Math.round(seconds * 1000);
+const finiteSeconds = z.number().finite().nonnegative();
+const verboseTranscriptionSchema = z
+  .object({
+    text: z.string().optional(),
+    language: z.string().optional(),
+    duration: finiteSeconds.optional(),
+    segments: z
+      .array(
+        z.object({
+          start: finiteSeconds,
+          end: finiteSeconds,
+          text: z.string(),
+          avg_logprob: z.number().finite().optional(),
+        }),
+      )
+      .optional(),
+    words: z
+      .array(z.object({ word: z.string(), start: finiteSeconds, end: finiteSeconds }))
+      .optional(),
+  })
+  .passthrough();
 
-async function collect(data: Uint8Array | ReadableStream<Uint8Array>): Promise<Uint8Array> {
+async function collect(
+  data: Uint8Array | ReadableStream<Uint8Array>,
+  signal: AbortSignal,
+): Promise<Uint8Array> {
   if (data instanceof Uint8Array) return data;
 
   const chunks: Uint8Array[] = [];
   let length = 0;
   const reader = data.getReader();
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    chunks.push(value);
-    length += value.length;
+  const onAbort = (): void => {
+    void reader.cancel(signal.reason);
+  };
+  signal.addEventListener('abort', onAbort, { once: true });
+  try {
+    for (;;) {
+      if (signal.aborted) throw signal.reason;
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      length += value.length;
+    }
+    if (signal.aborted) throw signal.reason;
+  } finally {
+    signal.removeEventListener('abort', onAbort);
   }
 
   const joined = new Uint8Array(length);
@@ -109,14 +144,14 @@ export function openAiCompatibleSttAdapter<R extends VerboseTranscription>(
           }
           form.set('url', request.source.url);
         } else {
-          const bytes = await collect(request.source.data);
+          const bytes = await collect(request.source.data, request.signal);
           // Copied once because `Blob` will not take a view onto a possibly
           // shared buffer, and because the multipart encoder would copy anyway.
           const part = new Uint8Array(bytes);
           form.set('file', new Blob([part], { type: request.source.mimeType }), 'audio');
         }
 
-        const response = await requestJson<R>(
+        const rawResponse = await requestJson<unknown>(
           `${endpoint.replace(/\/$/, '')}/audio/transcriptions`,
           {
             method: 'POST',
@@ -128,6 +163,11 @@ export function openAiCompatibleSttAdapter<R extends VerboseTranscription>(
           },
           context,
         );
+        const response = parseProviderResponse(
+          verboseTranscriptionSchema,
+          rawResponse,
+          context,
+        ) as R;
 
         const segments: TranscriptSegment[] = (response.segments ?? []).map((segment, index) => ({
           index,

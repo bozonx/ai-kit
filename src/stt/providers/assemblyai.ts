@@ -1,4 +1,5 @@
 import { AiError } from '../../errors.js';
+import { z } from 'zod';
 import type {
   ProviderStreamRequest,
   ProviderTranscribeRequest,
@@ -9,7 +10,7 @@ import type {
   TranscriptionResult,
   WordTiming,
 } from '../types.js';
-import { jsonRequester, segmentsFromWords, sleep } from './http.js';
+import { jsonRequester, parseProviderResponse, segmentsFromWords, sleep } from './http.js';
 import { openSocket } from './socket.js';
 
 /**
@@ -24,6 +25,56 @@ const DEFAULT_STREAMING_URL = 'wss://streaming.assemblyai.com/v3/ws';
 
 const POLL_INTERVAL_MS = 3_000;
 const CONTEXT = { provider: 'assemblyai' };
+const finiteMilliseconds = z.number().finite().nonnegative();
+const createResponseSchema = z.object({ id: z.string().min(1) });
+const transcriptResponseSchema = z.object({
+  id: z.string().min(1),
+  status: z.enum(['queued', 'processing', 'completed', 'error']),
+  text: z.string().optional(),
+  error: z.string().optional(),
+  audio_duration: z.number().finite().nonnegative().optional(),
+  language_code: z.string().optional(),
+  confidence: z.number().finite().optional(),
+  words: z
+    .array(
+      z.object({
+        start: finiteMilliseconds,
+        end: finiteMilliseconds,
+        text: z.string(),
+        confidence: z.number().finite().optional(),
+        speaker: z.string().optional(),
+      }),
+    )
+    .optional(),
+  utterances: z
+    .array(
+      z.object({
+        start: finiteMilliseconds,
+        end: finiteMilliseconds,
+        text: z.string(),
+        speaker: z.string().optional(),
+        confidence: z.number().finite().optional(),
+      }),
+    )
+    .nullable()
+    .optional(),
+});
+const turnMessageSchema = z.object({
+  type: z.string().optional(),
+  transcript: z.string().optional(),
+  end_of_turn: z.boolean().optional(),
+  turn_is_formatted: z.boolean().optional(),
+  words: z
+    .array(
+      z.object({
+        start: finiteMilliseconds,
+        end: finiteMilliseconds,
+        text: z.string(),
+        confidence: z.number().finite().optional(),
+      }),
+    )
+    .optional(),
+});
 
 interface CreateResponse {
   id: string;
@@ -74,7 +125,7 @@ export const assemblyAiSttProvider: SttProviderFactory = ({
   /** Bytes go up first: the API transcribes a URL, never a request body. */
   async function upload(request: ProviderTranscribeRequest): Promise<string> {
     if ('url' in request.source) return request.source.url;
-    const result = await requestJson<{ upload_url: string }>(
+    const result = await requestJson<unknown>(
       `${base}/v2/upload`,
       {
         method: 'POST',
@@ -86,7 +137,10 @@ export const assemblyAiSttProvider: SttProviderFactory = ({
       } as RequestInit,
       { ...CONTEXT, model: request.modelId },
     );
-    return result.upload_url;
+    return parseProviderResponse(z.object({ upload_url: z.string().url() }), result, {
+      ...CONTEXT,
+      model: request.modelId,
+    }).upload_url;
   }
 
   return {
@@ -109,7 +163,7 @@ export const assemblyAiSttProvider: SttProviderFactory = ({
       if (options.diarization) payload.speaker_labels = true;
       if (options.keyterms?.length) payload.word_boost = options.keyterms;
 
-      const created = await requestJson<CreateResponse>(
+      const createdRaw = await requestJson<unknown>(
         `${base}/v2/transcript`,
         {
           method: 'POST',
@@ -119,12 +173,22 @@ export const assemblyAiSttProvider: SttProviderFactory = ({
         },
         context,
       );
+      const created: CreateResponse = parseProviderResponse(
+        createResponseSchema,
+        createdRaw,
+        context,
+      );
 
       for (;;) {
         await sleep(POLL_INTERVAL_MS, request.signal);
-        const body = await requestJson<TranscriptResponse>(
+        const bodyRaw = await requestJson<unknown>(
           `${base}/v2/transcript/${created.id}`,
           { method: 'GET', headers: authorization, signal: request.signal },
+          context,
+        );
+        const body: TranscriptResponse = parseProviderResponse(
+          transcriptResponseSchema,
+          bodyRaw,
           context,
         );
 
@@ -177,24 +241,28 @@ export const assemblyAiSttProvider: SttProviderFactory = ({
       url.searchParams.set('sample_rate', String(request.sampleRate));
       url.searchParams.set('encoding', 'pcm_s16le');
       url.searchParams.set('format_turns', 'true');
+      if (request.options.language) url.searchParams.set('language_code', request.options.language);
       if (request.options.keyterms?.length) {
         url.searchParams.set('keyterms_prompt', JSON.stringify(request.options.keyterms));
       }
 
       const session = await openSocket(url.toString(), {
         headers: authorization,
-        signal: request.signal,
+        signal: request.connectSignal ?? request.signal,
+        lifetimeSignal: request.signal,
         context,
         openSocket: socketOpener,
       });
 
       // Pumping audio is a separate task from reading results: a session that
       // stopped sending is still receiving the tail of what was already said.
+      let pumpError: unknown;
       const pump = (async () => {
         try {
           for await (const chunk of request.audio) session.send(chunk.data);
           session.close(JSON.stringify({ type: 'Terminate' }));
-        } catch {
+        } catch (error) {
+          pumpError = error;
           session.close();
         }
       })();
@@ -203,7 +271,11 @@ export const assemblyAiSttProvider: SttProviderFactory = ({
         try {
           let emittedMs = 0;
           for await (const message of session.messages) {
-            const turn = JSON.parse(message) as TurnMessage;
+            const turn: TurnMessage = parseProviderResponse(
+              turnMessageSchema,
+              JSON.parse(message) as unknown,
+              context,
+            );
             if (turn.type !== 'Turn' || turn.transcript === undefined) continue;
 
             const startMs = turn.words?.[0]?.start ?? emittedMs;
@@ -220,6 +292,7 @@ export const assemblyAiSttProvider: SttProviderFactory = ({
           session.close();
           await pump;
         }
+        if (pumpError !== undefined) throw pumpError;
       })();
     },
   } satisfies SttProvider;

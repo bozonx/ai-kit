@@ -15,26 +15,33 @@ export interface OpenSessionOptions {
   headers?: Record<string, string>;
   protocols?: string[];
   signal: AbortSignal;
+  /** Session-lifetime cancellation; defaults to the connection signal. */
+  lifetimeSignal?: AbortSignal;
   context: { provider: string; model: string };
   /** Defaults to the platform WebSocket. */
   openSocket?: SocketOpener;
 }
 
-const aborted = (): AiError => new AiError('aborted', 'The live session was aborted');
+const aborted = (signal: AbortSignal): AiError =>
+  (signal.reason as { name?: string } | undefined)?.name === 'TimeoutError'
+    ? new AiError('timeout', 'Opening the live session ran out of its time budget')
+    : new AiError('aborted', 'The live session was aborted');
 
 export async function openSocket(url: string, options: OpenSessionOptions): Promise<SocketSession> {
   const { context, signal } = options;
-  if (signal.aborted) throw aborted();
+  const lifetimeSignal = options.lifetimeSignal ?? signal;
+  if (signal.aborted) throw aborted(signal);
 
   let session: SocketSession;
   try {
     session = await (options.openSocket ?? platformSocket)(url, {
-      signal,
+      connectSignal: signal,
+      signal: lifetimeSignal,
       ...(options.headers === undefined ? {} : { headers: options.headers }),
       ...(options.protocols === undefined ? {} : { protocols: options.protocols }),
     });
   } catch (cause) {
-    if (signal.aborted) throw aborted();
+    if (signal.aborted) throw aborted(signal);
     if (isAiError(cause)) throw cause;
     throw new AiError(
       'provider_unavailable',
@@ -51,7 +58,7 @@ export async function openSocket(url: string, options: OpenSessionOptions): Prom
       try {
         yield* session.messages;
       } catch (cause) {
-        if (signal.aborted) throw aborted();
+        if (lifetimeSignal.aborted) throw aborted(lifetimeSignal);
         if (isAiError(cause)) throw cause;
         // Anything but a clean close cut the transcript short, and the caller
         // has to be told: the words already delivered are still owed and shown.
@@ -65,7 +72,7 @@ export async function openSocket(url: string, options: OpenSessionOptions): Prom
           },
         );
       }
-      if (signal.aborted) throw aborted();
+      if (lifetimeSignal.aborted) throw aborted(lifetimeSignal);
     },
   };
 

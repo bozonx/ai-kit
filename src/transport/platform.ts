@@ -53,6 +53,7 @@ export const platformSocket: SocketOpener = (url, options) => {
   socket.binaryType = 'arraybuffer';
 
   const decoder = new TextDecoder();
+  const connectSignal = options.connectSignal ?? options.signal;
   const onAbort = (): void => socket.close(1000);
   const queue = createMessageQueue(() => options.signal.removeEventListener('abort', onAbort));
 
@@ -92,13 +93,32 @@ export const platformSocket: SocketOpener = (url, options) => {
   };
 
   return new Promise((resolve, reject) => {
-    socket.addEventListener('open', () => resolve(session), { once: true });
+    const onConnectAbort = (): void => {
+      socket.close(1000);
+      reject(new AiError('aborted', 'Opening the live session was aborted'));
+    };
+    const finishOpening = (): void => connectSignal.removeEventListener('abort', onConnectAbort);
+    socket.addEventListener(
+      'open',
+      () => {
+        finishOpening();
+        resolve(session);
+      },
+      { once: true },
+    );
     // The platform socket says nothing useful about why it failed: an error
     // event carries no reason, and the close that follows carries 1006.
-    socket.addEventListener('error', () => reject(new Error('the socket failed')), {
-      once: true,
-    });
-    if (options.signal.aborted) {
+    socket.addEventListener(
+      'error',
+      () => {
+        finishOpening();
+        reject(new Error('the socket failed'));
+      },
+      { once: true },
+    );
+    connectSignal.addEventListener('abort', onConnectAbort, { once: true });
+    if (connectSignal.aborted || options.signal.aborted) {
+      finishOpening();
       socket.close(1000);
       reject(new AiError('aborted', 'The live session was aborted'));
     }

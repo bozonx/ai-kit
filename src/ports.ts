@@ -89,7 +89,8 @@ export type FetchFunction = typeof globalThis.fetch;
  * The contract an implementation has to keep, and nothing more: reject when
  * the socket cannot be opened, end `messages` when the server closes normally
  * (1000 or 1005), throw from it when the session was cut short, and close the
- * socket when `signal` aborts. The library turns every failure into an
+ * socket when `signal` aborts. `connectSignal`, when supplied, only limits the
+ * handshake and must be detached once the socket opens. The library turns every failure into an
  * `AiError` with the provider named, so an implementation throws plain errors.
  */
 export type SocketOpener = (url: string, options: OpenSocketOptions) => Promise<SocketSession>;
@@ -98,6 +99,9 @@ export interface OpenSocketOptions {
   /** Request headers for the handshake. Most speech providers authenticate here. */
   headers?: Record<string, string>;
   protocols?: string[];
+  /** Optional handshake-only deadline. It must not close an established session. */
+  connectSignal?: AbortSignal;
+  /** Cancellation for the established session's whole lifetime. */
   signal: AbortSignal;
 }
 

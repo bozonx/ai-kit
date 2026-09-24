@@ -9,7 +9,8 @@ import type {
   TranscriptionResult,
   WordTiming,
 } from '../types.js';
-import { jsonRequester, segmentsFromWords } from './http.js';
+import { z } from 'zod';
+import { jsonRequester, parseProviderResponse, segmentsFromWords } from './http.js';
 import { openSocket } from './socket.js';
 
 /**
@@ -60,6 +61,60 @@ interface LiveMessage {
 }
 
 const toMs = (seconds: number): number => Math.round(seconds * 1000);
+const finiteSeconds = z.number().finite().nonnegative();
+const wordSchema = z.object({
+  word: z.string(),
+  punctuated_word: z.string().optional(),
+  start: finiteSeconds,
+  end: finiteSeconds,
+  confidence: z.number().finite().optional(),
+  speaker: z.number().finite().optional(),
+});
+const listenResponseSchema = z.object({
+  metadata: z
+    .object({ duration: finiteSeconds.optional(), request_id: z.string().optional() })
+    .optional(),
+  results: z
+    .object({
+      channels: z
+        .array(
+          z.object({
+            detected_language: z.string().optional(),
+            alternatives: z
+              .array(
+                z.object({
+                  transcript: z.string().optional(),
+                  confidence: z.number().finite().optional(),
+                  words: z.array(wordSchema).optional(),
+                }),
+              )
+              .optional(),
+          }),
+        )
+        .optional(),
+      utterances: z
+        .array(
+          z.object({
+            start: finiteSeconds,
+            end: finiteSeconds,
+            transcript: z.string(),
+            confidence: z.number().finite().optional(),
+            speaker: z.number().finite().optional(),
+          }),
+        )
+        .optional(),
+    })
+    .optional(),
+});
+const liveMessageSchema = z.object({
+  type: z.string().optional(),
+  is_final: z.boolean().optional(),
+  start: finiteSeconds.optional(),
+  duration: finiteSeconds.optional(),
+  channel: z
+    .object({ alternatives: z.array(z.object({ transcript: z.string().optional() })).optional() })
+    .optional(),
+});
 
 function queryFor(
   modelId: string,
@@ -104,9 +159,14 @@ export const deepgramSttProvider: SttProviderFactory = ({
               duplex: 'half',
             };
 
-      const response = await requestJson<ListenResponse>(
+      const rawResponse = await requestJson<unknown>(
         `${base}/v1/listen?${query.toString()}`,
         { method: 'POST', signal: request.signal, ...body } as RequestInit,
+        context,
+      );
+      const response: ListenResponse = parseProviderResponse(
+        listenResponseSchema,
+        rawResponse,
         context,
       );
 
@@ -154,14 +214,22 @@ export const deepgramSttProvider: SttProviderFactory = ({
 
       const session = await openSocket(
         `${(baseUrl ?? DEFAULT_STREAMING_URL).replace(/\/$/, '')}/v1/listen?${query.toString()}`,
-        { headers: authorization, signal: request.signal, context, openSocket: socketOpener },
+        {
+          headers: authorization,
+          signal: request.connectSignal ?? request.signal,
+          lifetimeSignal: request.signal,
+          context,
+          openSocket: socketOpener,
+        },
       );
 
+      let pumpError: unknown;
       const pump = (async () => {
         try {
           for await (const chunk of request.audio) session.send(chunk.data);
           session.close(JSON.stringify({ type: 'CloseStream' }));
-        } catch {
+        } catch (error) {
+          pumpError = error;
           session.close();
         }
       })();
@@ -169,7 +237,11 @@ export const deepgramSttProvider: SttProviderFactory = ({
       return (async function* events(): AsyncIterable<SttStreamEvent> {
         try {
           for await (const message of session.messages) {
-            const event = JSON.parse(message) as LiveMessage;
+            const event: LiveMessage = parseProviderResponse(
+              liveMessageSchema,
+              JSON.parse(message) as unknown,
+              context,
+            );
             if (event.type !== 'Results') continue;
 
             const text = event.channel?.alternatives?.[0]?.transcript ?? '';
@@ -188,6 +260,7 @@ export const deepgramSttProvider: SttProviderFactory = ({
           session.close();
           await pump;
         }
+        if (pumpError !== undefined) throw pumpError;
       })();
     },
   } satisfies SttProvider;

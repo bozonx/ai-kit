@@ -148,6 +148,16 @@ describe('the Groq adapter', () => {
     expect(isAiError(error) && error.kind).toBe('rate_limit');
     expect(isAiError(error) && error.retryable).toBe(true);
   });
+
+  it('rejects a successful response with malformed timings', async () => {
+    mockFetch([{ body: { text: 'x', segments: [{ start: 'now', end: 1, text: 'x' }] } }]);
+
+    const error = await groqSttProvider({ apiKey: 'k' })
+      .transcribe(request())
+      .catch((caught: unknown) => caught);
+
+    expect(isAiError(error) && error.kind).toBe('provider_unavailable');
+  });
 });
 
 describe('the Deepgram adapter', () => {
