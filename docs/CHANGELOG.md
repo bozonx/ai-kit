@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- Validate PCM16 sample alignment, sample rates, and RIFF size limits before creating WAV files.
+
 ## [0.5.0] - 2026-09-23
 
 ### Added

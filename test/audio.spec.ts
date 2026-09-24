@@ -84,4 +84,10 @@ describe('pcm16ToWav', () => {
     expect(view.getUint32(40, true)).toBe(4);
     expect([...wav.subarray(44)]).toEqual([1, 2, 3, 4]);
   });
+
+  it('rejects invalid sample rates and incomplete samples', () => {
+    expect(() => pcm16ToWav(new Uint8Array(2), 0)).toThrow(RangeError);
+    expect(() => pcm16ToWav(new Uint8Array(2), 16_000.5)).toThrow(RangeError);
+    expect(() => pcm16ToWav(new Uint8Array(1), 16_000)).toThrow('complete 2-byte samples');
+  });
 });

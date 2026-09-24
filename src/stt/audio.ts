@@ -117,6 +117,16 @@ export class SilenceDetector {
  * provider accepts WAV, and none of them accepts headerless samples as a file.
  */
 export function pcm16ToWav(pcm: Uint8Array, sampleRate: number): Uint8Array {
+  if (!Number.isInteger(sampleRate) || sampleRate <= 0 || sampleRate > 0xffffffff / 2) {
+    throw new RangeError('PCM sample rate must be a positive 32-bit integer');
+  }
+  if (pcm.byteLength % 2 !== 0) {
+    throw new RangeError('PCM16 data must contain complete 2-byte samples');
+  }
+  if (pcm.byteLength > 0xffffffff - 36) {
+    throw new RangeError('PCM16 data is too large for a WAV file');
+  }
+
   const wav = new Uint8Array(44 + pcm.byteLength);
   const view = new DataView(wav.buffer);
   const ascii = (offset: number, text: string): void => {
