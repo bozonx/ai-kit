@@ -222,6 +222,34 @@ describe.each(openers)('openSocket over %s', (_name, opener) => {
 });
 
 describe('the Deepgram live session', () => {
+  it('reports a dropped socket without waiting for the microphone to end', async () => {
+    const neverEndingAudio: AsyncIterable<AudioChunk> = {
+      [Symbol.asyncIterator]() {
+        return { next: () => new Promise<IteratorResult<AudioChunk>>(() => undefined) };
+      },
+    };
+    const provider = deepgramSttProvider({
+      apiKey: 'k',
+      openSocket: () =>
+        Promise.resolve({
+          send: () => undefined,
+          close: () => undefined,
+          messages: {
+            [Symbol.asyncIterator]() {
+              return { next: () => Promise.reject(new Error('provider disconnected')) };
+            },
+          },
+        }),
+    });
+    const events = await live(provider, {
+      modelId: 'nova-3',
+      options: {},
+      sampleRate: 16_000,
+      audio: neverEndingAudio,
+      signal: new AbortController().signal,
+    });
+    await expect(collect(events)).rejects.toThrow('provider disconnected');
+  });
   it('separates drafts from settled speech and times both in milliseconds', async () => {
     const url = await serve(socket => {
       socket.on('message', () => undefined);
@@ -295,6 +323,38 @@ describe('the Deepgram live session', () => {
 });
 
 describe('the AssemblyAI live session', () => {
+  it('emits a formatted turn once and sends the selected model', async () => {
+    let path: string | undefined;
+    const url = await serve((socket, request) => {
+      path = request.url;
+      for (const formatted of [false, true]) {
+        socket.send(
+          JSON.stringify({
+            type: 'Turn',
+            turn_order: 0,
+            transcript: formatted ? 'Hello.' : 'hello',
+            end_of_turn: true,
+            turn_is_formatted: formatted,
+          }),
+        );
+      }
+      setTimeout(() => socket.close(1000), 20);
+    });
+    const events = await collect(
+      await live(assemblyAiSttProvider({ apiKey: 'k', baseUrl: url }), {
+        modelId: 'whisper-rt',
+        options: {},
+        sampleRate: 16_000,
+        audio,
+        signal: AbortSignal.timeout(5_000),
+      }),
+    );
+    expect(path).toContain('speech_model=whisper-rt');
+    expect(events).toEqual([
+      { type: 'partial', text: 'hello', startMs: 0 },
+      { type: 'final', segment: { startMs: 0, endMs: 0, text: 'Hello.' } },
+    ]);
+  });
   it('treats the end of a turn as settled text and everything before it as a draft', async () => {
     const url = await serve(socket => {
       socket.on('message', () => undefined);

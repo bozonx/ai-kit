@@ -1,6 +1,7 @@
 import { describe, it, expect } from '@jest/globals';
 
 import { Catalog } from '../src/catalog/catalog.js';
+import { pcm16ToWav } from '../src/stt/audio.js';
 import { calculateSttCost, estimateSttCost } from '../src/catalog/pricing.js';
 import { CatalogError, AiError, isAiError } from '../src/errors.js';
 import { createAiKit } from '../src/kit.js';
@@ -291,7 +292,7 @@ describe('running a transcription', () => {
     expect(result.text).toBe('second try');
   });
 
-  it('estimates in-memory audio when the provider omits its duration', async () => {
+  it('measures WAV audio when the provider omits its duration', async () => {
     const kit = kitWith(
       fakeProvider({
         transcribe: () => Promise.resolve({ text: 'hello', segments: [], audioSeconds: 0 }),
@@ -302,11 +303,73 @@ describe('running a transcription', () => {
     const result = await kit.transcribe({
       policy: { mode: 'auto', taskClass: 'transcription' },
       options: { language: 'en' },
-      source: { data: new Uint8Array(32_000), mimeType: 'audio/wav' },
+      source: { data: pcm16ToWav(new Uint8Array(96_000), 48_000), mimeType: 'audio/wav' },
     });
 
     expect(result.audioSeconds).toBe(1);
     expect(result.costMicros).toBe(10);
+  });
+
+  it('rejects unmeasured compressed audio instead of billing a size guess', async () => {
+    const kit = kitWith(
+      fakeProvider({
+        transcribe: () => Promise.resolve({ text: 'hello', segments: [], audioSeconds: 0 }),
+      }),
+      [],
+    );
+    await expect(
+      kit.transcribe({
+        policy: { mode: 'manual', taskClass: 'transcription', requestedModel: 'cheap' },
+        options: { language: 'en' },
+        source: { data: new Uint8Array(4_000), mimeType: 'audio/ogg' },
+      }),
+    ).rejects.toThrow();
+  });
+
+  it('replays a one-shot audio stream after a retryable provider failure', async () => {
+    let calls = 0;
+    const retryCatalog = Catalog.fromObject({
+      requirePricing: false,
+      models: [
+        {
+          name: 'groq-speech',
+          kind: 'stt',
+          provider: 'groq',
+          model: 'whisper-large-v3',
+          tier: 'standard',
+          sttCapabilities: { languageDetection: true, punctuation: true },
+        },
+      ],
+      taskClasses: { transcription: ['groq-speech'] },
+    });
+    const kit = createAiKit({
+      catalog: retryCatalog,
+      keys: { get: () => Promise.resolve('key') },
+      retry: { initialDelayMs: 0, maxDelayMs: 0 },
+      transport: {
+        fetch: () => {
+          calls += 1;
+          return Promise.resolve(
+            calls === 1
+              ? new Response('{}', { status: 503 })
+              : Response.json({ text: 'hello', duration: 1 }),
+          );
+        },
+      },
+    });
+    const bytes = pcm16ToWav(new Uint8Array(32_000), 16_000);
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(bytes);
+        controller.close();
+      },
+    });
+    const result = await kit.transcribe({
+      policy: { mode: 'manual', taskClass: 'transcription', requestedModel: 'groq-speech' },
+      source: { data: stream, mimeType: 'audio/wav' },
+    });
+    expect(result.text).toBe('hello');
+    expect(calls).toBe(2);
   });
 
   it('rejects an unmeasured URL instead of recording a free success', async () => {
@@ -383,6 +446,25 @@ describe('running a live session', () => {
     const finals = parts.filter(part => part.type === 'final');
     expect(finals.map(part => part.segment.index)).toEqual([0, 1]);
     expect(events[0]).toMatchObject({ status: 'ok' });
+  });
+
+  it('records an aborted session when the reader stops after a final', async () => {
+    const events: UsageEvent[] = [];
+    const kit = kitWith(
+      fakeProvider({
+        events: [{ type: 'final', segment: { startMs: 0, endMs: 500, text: 'Hello' } }],
+      }),
+      events,
+    );
+    for await (const part of kit.transcribeStream({
+      policy: { mode: 'auto', taskClass: 'dictation' },
+      options: { language: 'en' },
+      audio,
+    })) {
+      if (part.type === 'final') break;
+    }
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ status: 'aborted' });
   });
 
   it('uses the request deadline only while opening the live session', async () => {

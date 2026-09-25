@@ -1,6 +1,7 @@
 import { AiError, isAiError } from '../../errors.js';
 import type { SocketOpener, SocketSession } from '../../ports.js';
 import { platformSocket } from '../../transport/platform.js';
+import type { AudioChunk } from '../types.js';
 
 /**
  * A live session through whichever socket the host supplied, with its
@@ -77,4 +78,35 @@ export async function openSocket(url: string, options: OpenSessionOptions): Prom
   };
 
   return { messages, send: data => session.send(data), close: payload => session.close(payload) };
+}
+
+/** Send audio until it ends or the provider session closes. */
+export function pumpAudio(
+  audio: AsyncIterable<AudioChunk>,
+  session: SocketSession,
+  endMessage: string,
+): { done: Promise<void>; stop: () => void } {
+  const iterator = audio[Symbol.asyncIterator]();
+  let stopped = false;
+  let wake: (() => void) | undefined;
+  const interrupted = new Promise<IteratorResult<AudioChunk>>(resolve => {
+    wake = () => resolve({ done: true, value: undefined });
+  });
+  const done = (async () => {
+    for (;;) {
+      const next = await Promise.race([iterator.next(), interrupted]);
+      if (stopped) return;
+      if (next.done) break;
+      session.send(next.value.data);
+    }
+    session.close(endMessage);
+  })();
+  return {
+    done,
+    stop: () => {
+      stopped = true;
+      wake?.();
+      void iterator.return?.().catch(() => undefined);
+    },
+  };
 }

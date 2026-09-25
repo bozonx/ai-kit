@@ -363,6 +363,12 @@ for await (const part of kit.transcribeStream({
 
 Three things about it are worth knowing before the first invoice:
 
+For batch audio, the provider's reported duration is used when available. If it
+omits duration, the kit reads a complete PCM WAV header or uses the caller's
+`knownAudioSeconds`; other unmeasured formats fail rather than being charged
+from a byte-size guess. A `ReadableStream` source is buffered once (up to
+256 MiB) so retry attempts send identical audio.
+
 - **Speech is priced by the hour of audio**, in `sttPricing`, and a model may
   have that block or `pricing` but never both. Seconds are rounded up to whole
   seconds before anything is multiplied, because that is how providers bill.

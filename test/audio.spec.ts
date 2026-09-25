@@ -1,6 +1,12 @@
 import { describe, it, expect } from '@jest/globals';
 
-import { estimateAudioSeconds, pcm16Rms, pcm16ToWav, SilenceDetector } from '../src/stt/audio.js';
+import {
+  estimateAudioSeconds,
+  pcm16Rms,
+  pcm16ToWav,
+  SilenceDetector,
+  wavAudioSeconds,
+} from '../src/stt/audio.js';
 
 function pcm(seconds: number, amplitude: number): Uint8Array {
   const bytes = new Uint8Array(seconds * 32_000);
@@ -22,6 +28,15 @@ describe('estimateAudioSeconds', () => {
 
   it('never says less than a second', () => {
     expect(estimateAudioSeconds(1, 'audio/unknown')).toBe(1);
+  });
+});
+
+describe('wavAudioSeconds', () => {
+  it('measures the encoded sample rate and refuses an inconsistent byte rate', () => {
+    const wav = pcm16ToWav(new Uint8Array(96_000), 48_000);
+    expect(wavAudioSeconds(wav)).toBe(1);
+    new DataView(wav.buffer).setUint32(28, 32_000, true);
+    expect(wavAudioSeconds(wav)).toBeUndefined();
   });
 });
 

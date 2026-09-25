@@ -43,7 +43,7 @@ const toMs = (seconds: number): number => Math.round(seconds * 1000);
 const finiteSeconds = z.number().finite().nonnegative();
 const verboseTranscriptionSchema = z
   .object({
-    text: z.string().optional(),
+    text: z.string(),
     language: z.string().optional(),
     duration: finiteSeconds.optional(),
     segments: z
@@ -86,6 +86,7 @@ async function collect(
     if (signal.aborted) throw signal.reason;
   } finally {
     signal.removeEventListener('abort', onAbort);
+    reader.releaseLock();
   }
 
   const joined = new Uint8Array(length);

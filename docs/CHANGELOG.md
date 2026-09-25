@@ -7,12 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- Measure WAV duration from its header and reject unmeasured audio instead of billing from a size guess.
+- Preserve live-session accounting on early exit and stop audio pumps when a provider socket closes.
+- Validate successful speech responses, redact provider error bodies, and handle formatted streaming turns once.
+- Buffer one-shot audio streams once so retries can replay the same bytes.
 - Validate PCM16 sample alignment, sample rates, and RIFF size limits before creating WAV files.
 - Keep live transcription sessions alive after their connection deadline, while still applying the
   deadline to opening the provider socket.
 - Propagate audio-source failures from live providers instead of turning them into a clean finish.
 - Validate STT provider response shapes and reject invalid durations instead of recording zero-cost
-  successful calls. In-memory audio uses a conservative duration estimate when a provider omits it.
+  successful calls. Unreported duration requires measurable WAV audio or a caller-supplied duration.
 - Forward the requested language to AssemblyAI live transcription.
 
 ## [0.5.0] - 2026-09-23

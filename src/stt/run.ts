@@ -13,7 +13,7 @@ import {
 import { isPriced, quoteCandidate, type CandidatePlan } from '../policy/quote.js';
 import type { CallStatus, UsageSink } from '../ports.js';
 import { assertSttCapabilities } from './policy.js';
-import { estimateAudioSeconds } from './audio.js';
+import { wavAudioSeconds } from './audio.js';
 import type { SttProviderRegistry } from './registry.js';
 import type {
   AudioChunk,
@@ -56,6 +56,8 @@ interface CommonSttRequest extends AttemptRequest {
 
 export interface TranscribeRequest extends CommonSttRequest {
   source: AudioSource;
+  /** Exact duration when the caller measured the audio itself. */
+  knownAudioSeconds?: number;
 }
 
 export interface StreamTranscribeRequest extends CommonSttRequest {
@@ -201,39 +203,60 @@ export async function runTranscribe(
   const options = request.options ?? {};
   const candidates = pickCandidates(deps, request, false);
   const startedAt = deps.clock.now();
+  const collectionDeadline = AbortSignal.timeout(
+    request.totalTimeoutMs ?? deps.retry.totalTimeoutMs,
+  );
+  const collectionSignal = request.abortSignal
+    ? AbortSignal.any([request.abortSignal, collectionDeadline])
+    : collectionDeadline;
+  const source =
+    'data' in request.source && request.source.data instanceof ReadableStream
+      ? {
+          data: await collectAudio(request.source.data, collectionSignal),
+          mimeType: request.source.mimeType,
+        }
+      : request.source;
 
-  const outcome = await attemptCandidates(deps, candidates, request, {
-    operation: 'transcribe',
-    prepare: candidate => deps.registry.provider(candidate.model, candidate.route, request.keys),
-    run: async ({ client, candidate, signal }) => {
-      // Checked per candidate rather than once: a fallback is a different
-      // model, and the option the caller asked for is not automatically one it
-      // has. A pinned model that cannot do the job fails here, loudly.
-      assertSttCapabilities(candidate.model, options, false);
-      const result = await client.transcribe({
-        modelId: candidate.route.model,
-        source: request.source,
-        options,
-        signal,
-      });
-      const estimatedAudioSeconds =
-        'data' in request.source && request.source.data instanceof Uint8Array
-          ? estimateAudioSeconds(request.source.data.byteLength, request.source.mimeType)
-          : undefined;
-      const audioSeconds =
-        Number.isFinite(result.audioSeconds) && result.audioSeconds > 0
-          ? result.audioSeconds
-          : estimatedAudioSeconds;
-      if (audioSeconds === undefined || !Number.isFinite(audioSeconds) || audioSeconds <= 0) {
-        throw new AiError(
-          'provider_unavailable',
-          `Provider "${candidate.route.provider}" did not report a valid audio duration`,
-          { provider: candidate.route.provider, model: candidate.model.name },
-        );
-      }
-      return { ...result, audioSeconds };
+  const remainingMs =
+    (request.totalTimeoutMs ?? deps.retry.totalTimeoutMs) - (deps.clock.now() - startedAt);
+  if (remainingMs <= 0) throw new AiError('timeout', 'The call ran out of its time budget');
+  const outcome = await attemptCandidates(
+    deps,
+    candidates,
+    { ...request, totalTimeoutMs: remainingMs },
+    {
+      operation: 'transcribe',
+      prepare: candidate => deps.registry.provider(candidate.model, candidate.route, request.keys),
+      run: async ({ client, candidate, signal }) => {
+        // Checked per candidate rather than once: a fallback is a different
+        // model, and the option the caller asked for is not automatically one it
+        // has. A pinned model that cannot do the job fails here, loudly.
+        assertSttCapabilities(candidate.model, options, false);
+        const result = await client.transcribe({
+          modelId: candidate.route.model,
+          source,
+          options,
+          signal,
+        });
+        const measuredAudioSeconds =
+          'data' in source && source.data instanceof Uint8Array
+            ? wavAudioSeconds(source.data)
+            : undefined;
+        const audioSeconds =
+          Number.isFinite(result.audioSeconds) && result.audioSeconds > 0
+            ? result.audioSeconds
+            : (request.knownAudioSeconds ?? measuredAudioSeconds);
+        if (audioSeconds === undefined || !Number.isFinite(audioSeconds) || audioSeconds <= 0) {
+          throw new AiError(
+            'provider_unavailable',
+            `Provider "${candidate.route.provider}" did not report a valid audio duration`,
+            { provider: candidate.route.provider, model: candidate.model.name },
+          );
+        }
+        return { ...result, audioSeconds };
+      },
     },
-  });
+  );
 
   const data = priceIt(
     outcome.candidate,
@@ -246,6 +269,43 @@ export async function runTranscribe(
   await record(deps, request, data, 'ok');
 
   return { ...outcome.value, ...data };
+}
+
+async function collectAudio(
+  stream: ReadableStream<Uint8Array>,
+  signal?: AbortSignal,
+): Promise<Uint8Array> {
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let length = 0;
+  const onAbort = (): void => {
+    void reader.cancel(signal?.reason);
+  };
+  signal?.addEventListener('abort', onAbort, { once: true });
+  try {
+    for (;;) {
+      signal?.throwIfAborted();
+      const { done, value } = await reader.read();
+      if (done) break;
+      length += value.byteLength;
+      if (length > 256 * 1024 * 1024) {
+        await reader.cancel();
+        throw new AiError('invalid_request', 'Audio stream exceeds the 256 MiB limit');
+      }
+      chunks.push(value);
+    }
+    signal?.throwIfAborted();
+  } finally {
+    signal?.removeEventListener('abort', onAbort);
+    reader.releaseLock();
+  }
+  const bytes = new Uint8Array(length);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
 }
 
 /**
@@ -263,6 +323,10 @@ export async function* runTranscribeStream(
   const candidates = pickCandidates(deps, request, true);
   const sampleRate = request.sampleRate ?? DEFAULT_SAMPLE_RATE;
   const startedAt = deps.clock.now();
+  const lifetimeController = new AbortController();
+  const lifetimeSignal = request.abortSignal
+    ? AbortSignal.any([request.abortSignal, lifetimeController.signal])
+    : lifetimeController.signal;
 
   // Only the connection is retried. Past the first word the session belongs to
   // whoever answered: reconnecting to a second provider mid-sentence would
@@ -285,28 +349,30 @@ export async function* runTranscribeStream(
         sampleRate,
         audio: request.audio,
         connectSignal: signal,
-        signal: request.abortSignal ?? new AbortController().signal,
+        signal: lifetimeSignal,
       });
     },
+  }).catch(error => {
+    lifetimeController.abort();
+    throw error;
   });
 
   const candidate = outcome.candidate;
   const connectedAt = deps.clock.now();
-
-  yield {
-    type: 'model',
-    provider: candidate.route.provider,
-    model: candidate.model.name,
-    ...(candidate.route.id === undefined ? {} : { routeId: candidate.route.id }),
-    routedBy: candidate.routedBy,
-  };
-
   let index = 0;
   let language = options.language;
   let status: CallStatus = 'ok';
   let failure: AiError | undefined;
+  let completed = false;
 
   try {
+    yield {
+      type: 'model',
+      provider: candidate.route.provider,
+      model: candidate.model.name,
+      ...(candidate.route.id === undefined ? {} : { routeId: candidate.route.id }),
+      routedBy: candidate.routedBy,
+    };
     for await (const event of outcome.value) {
       switch (event.type) {
         case 'partial':
@@ -323,6 +389,7 @@ export async function* runTranscribeStream(
           break;
       }
     }
+    completed = true;
   } catch (error) {
     failure = classifyError(error, {
       provider: candidate.route.provider,
@@ -330,6 +397,19 @@ export async function* runTranscribeStream(
       callerAborted: request.abortSignal?.aborted,
     });
     status = callStatusFor(failure.kind);
+  } finally {
+    lifetimeController.abort();
+    if (!completed && !failure) status = 'aborted';
+    const openSeconds = (deps.clock.now() - connectedAt) / 1000;
+    const data = priceIt(
+      candidate,
+      openSeconds,
+      options,
+      true,
+      outcome.attempts,
+      deps.clock.now() - startedAt,
+    );
+    await record(deps, request, data, status);
   }
 
   // Billed on the time the session was open, not on the words that came out of
@@ -344,8 +424,6 @@ export async function* runTranscribeStream(
     outcome.attempts,
     deps.clock.now() - startedAt,
   );
-  await record(deps, request, data, status);
-
   yield { type: 'usage', ...data };
 
   if (failure) {

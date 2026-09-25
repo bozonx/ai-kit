@@ -33,6 +33,37 @@ export function estimateAudioSeconds(byteLength: number, mimeType: string): numb
   return Math.max(1, Math.ceil(byteLength / rate));
 }
 
+/** Read the exact PCM duration when the complete WAV container is available. */
+export function wavAudioSeconds(bytes: Uint8Array): number | undefined {
+  if (bytes.byteLength < 44) return undefined;
+  const tag = (offset: number): string =>
+    String.fromCharCode(...bytes.subarray(offset, offset + 4));
+  if (tag(0) !== 'RIFF' || tag(8) !== 'WAVE') return undefined;
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const end = view.getUint32(4, true) + 8;
+  if (end > bytes.byteLength) return undefined;
+  let byteRate: number | undefined;
+  let dataBytes: number | undefined;
+  for (let offset = 12; offset + 8 <= end; ) {
+    const length = view.getUint32(offset + 4, true);
+    if (offset + 8 + length > end) return undefined;
+    if (tag(offset) === 'fmt ' && length >= 16) {
+      const encoding = view.getUint16(offset + 8, true);
+      const channels = view.getUint16(offset + 10, true);
+      const sampleRate = view.getUint32(offset + 12, true);
+      const rate = view.getUint32(offset + 16, true);
+      const bits = view.getUint16(offset + 22, true);
+      if (encoding !== 1 || channels === 0 || bits === 0 || bits % 8 !== 0) return undefined;
+      if (rate !== sampleRate * channels * (bits / 8)) return undefined;
+      byteRate = rate;
+    }
+    if (tag(offset) === 'data') dataBytes = length;
+    offset += 8 + length + (length % 2);
+  }
+  if (!byteRate || !dataBytes) return undefined;
+  return dataBytes / byteRate;
+}
+
 /** Root mean square of a PCM16 buffer, in PCM16 units. */
 export function pcm16Rms(chunk: Uint8Array): number {
   const samples = Math.floor(chunk.byteLength / 2);

@@ -64,7 +64,7 @@ async function requestJson<T>(
     const body = await limitedResponseText(response, 64 * 1024);
     throw new AiError(
       kindFromStatus(response.status, body),
-      `${context.provider} returned ${response.status}: ${truncate(body)}`,
+      `${context.provider} returned HTTP ${response.status}`,
       { ...context, status: response.status },
     );
   }
@@ -109,17 +109,6 @@ async function limitedResponseText(response: Response, maxBytes: number): Promis
 function isAbort(error: unknown): boolean {
   const name = (error as { name?: string } | null)?.name;
   return name === 'AbortError' || name === 'TimeoutError';
-}
-
-/**
- * Keeps a provider's error out of the logs at full length.
- *
- * Not only for tidiness: an error body from a speech provider can contain the
- * transcript, and transcripts do not go into logs at any length.
- */
-function truncate(text: string): string {
-  const trimmed = text.trim();
-  return trimmed.length > 200 ? `${trimmed.slice(0, 200)}…` : trimmed;
 }
 
 export function sleep(ms: number, signal: AbortSignal): Promise<void> {

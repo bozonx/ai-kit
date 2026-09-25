@@ -56,6 +56,13 @@ const request = (
 });
 
 describe('the Groq adapter', () => {
+  it('rejects a successful response without a transcript field', async () => {
+    mockFetch([{ body: {} }]);
+    const error = await groqSttProvider({ apiKey: 'k' })
+      .transcribe(request())
+      .catch((caught: unknown) => caught);
+    expect(isAiError(error) && error.kind).toBe('provider_unavailable');
+  });
   it('turns a verbose transcript into segments in milliseconds', async () => {
     mockFetch([
       {

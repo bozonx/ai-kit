@@ -11,7 +11,7 @@ import type {
   WordTiming,
 } from '../types.js';
 import { jsonRequester, parseProviderResponse, segmentsFromWords, sleep } from './http.js';
-import { openSocket } from './socket.js';
+import { openSocket, pumpAudio } from './socket.js';
 
 /**
  * AssemblyAI: the main paid provider, batch and live.
@@ -200,6 +200,13 @@ export const assemblyAiSttProvider: SttProviderFactory = ({
           );
         }
         if (body.status !== 'completed') continue;
+        if (body.text === undefined) {
+          throw new AiError(
+            'provider_unavailable',
+            'AssemblyAI completed without a transcript',
+            context,
+          );
+        }
 
         const words: WordTiming[] = (body.words ?? []).map(word => ({
           startMs: word.start,
@@ -241,6 +248,7 @@ export const assemblyAiSttProvider: SttProviderFactory = ({
       url.searchParams.set('sample_rate', String(request.sampleRate));
       url.searchParams.set('encoding', 'pcm_s16le');
       url.searchParams.set('format_turns', 'true');
+      url.searchParams.set('speech_model', request.modelId);
       if (request.options.language) url.searchParams.set('language_code', request.options.language);
       if (request.options.keyterms?.length) {
         url.searchParams.set('keyterms_prompt', JSON.stringify(request.options.keyterms));
@@ -257,15 +265,17 @@ export const assemblyAiSttProvider: SttProviderFactory = ({
       // Pumping audio is a separate task from reading results: a session that
       // stopped sending is still receiving the tail of what was already said.
       let pumpError: unknown;
-      const pump = (async () => {
-        try {
-          for await (const chunk of request.audio) session.send(chunk.data);
-          session.close(JSON.stringify({ type: 'Terminate' }));
-        } catch (error) {
-          pumpError = error;
-          session.close();
-        }
-      })();
+      const pump = pumpAudio(request.audio, session, JSON.stringify({ type: 'Terminate' }));
+      const onAbort = (): void => {
+        pump.stop();
+        session.close();
+      };
+      request.signal.addEventListener('abort', onAbort, { once: true });
+      if (request.signal.aborted) onAbort();
+      const pumpDone = pump.done.catch(error => {
+        pumpError = error;
+        session.close();
+      });
 
       return (async function* events(): AsyncIterable<SttStreamEvent> {
         try {
@@ -276,12 +286,19 @@ export const assemblyAiSttProvider: SttProviderFactory = ({
               JSON.parse(message) as unknown,
               context,
             );
+            if (turn.type === 'Error') {
+              throw new AiError(
+                'provider_unavailable',
+                'AssemblyAI live session returned an error',
+                context,
+              );
+            }
             if (turn.type !== 'Turn' || turn.transcript === undefined) continue;
 
             const startMs = turn.words?.[0]?.start ?? emittedMs;
             const endMs = turn.words?.[turn.words.length - 1]?.end ?? startMs;
 
-            if (turn.end_of_turn === true) {
+            if (turn.end_of_turn === true && turn.turn_is_formatted !== false) {
               emittedMs = endMs;
               yield { type: 'final', segment: { startMs, endMs, text: turn.transcript } };
             } else {
@@ -289,8 +306,10 @@ export const assemblyAiSttProvider: SttProviderFactory = ({
             }
           }
         } finally {
+          request.signal.removeEventListener('abort', onAbort);
+          pump.stop();
           session.close();
-          await pump;
+          await pumpDone;
         }
         if (pumpError !== undefined) throw pumpError;
       })();
