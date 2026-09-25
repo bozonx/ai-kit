@@ -1,6 +1,6 @@
 {
   "name": "@bozonx/ai-kit",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Reusable core for building AI features: priced model catalog, model policy, provider adapters, retries, tools, embeddings and prompt assembly",
   "type": "module",
   "license": "MIT",

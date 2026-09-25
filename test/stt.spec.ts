@@ -467,6 +467,36 @@ describe('running a live session', () => {
     expect(events[0]).toMatchObject({ status: 'aborted' });
   });
 
+  it('cancels an opened session when the reader stops after the model part', async () => {
+    const events: UsageEvent[] = [];
+    let lifetimeSignal: AbortSignal | undefined;
+    const kit = kitWith(
+      () => ({
+        transcribe: () => Promise.reject(new AiError('invalid_request', 'batch only')),
+        transcribeStream: request => {
+          lifetimeSignal = request.signal;
+          return Promise.resolve({
+            [Symbol.asyncIterator]() {
+              return { next: () => new Promise<IteratorResult<SttStreamEvent>>(() => undefined) };
+            },
+          });
+        },
+      }),
+      events,
+    );
+    for await (const part of kit.transcribeStream({
+      policy: { mode: 'auto', taskClass: 'dictation' },
+      options: { language: 'en' },
+      audio,
+    })) {
+      expect(part.type).toBe('model');
+      break;
+    }
+    expect(lifetimeSignal?.aborted).toBe(true);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ status: 'aborted' });
+  });
+
   it('uses the request deadline only while opening the live session', async () => {
     let connectionSignal: AbortSignal | undefined;
     let lifetimeSignal: AbortSignal | undefined;
@@ -498,7 +528,7 @@ describe('running a live session', () => {
     }
 
     expect(connectionSignal?.aborted).toBe(true);
-    expect(lifetimeSignal?.aborted).toBe(false);
+    expect(lifetimeSignal?.aborted).toBe(true);
     expect(parts.some(part => part.type === 'final')).toBe(true);
   });
 
