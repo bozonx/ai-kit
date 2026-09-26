@@ -320,6 +320,28 @@ describe('the Deepgram live session', () => {
     expect(path).toContain('sample_rate=24000');
     expect(path).toContain('interim_results=true');
   });
+
+  it('follows any spoken language when none is set, as a live session cannot detect one', async () => {
+    let path: string | undefined;
+    const url = await serve((socket, request) => {
+      path = request.url;
+      socket.close(1000);
+    });
+
+    await collect(
+      await live(deepgramSttProvider({ apiKey: 'k', baseUrl: url }), {
+        modelId: 'nova-3',
+        options: {},
+        sampleRate: 16_000,
+        audio,
+        signal: AbortSignal.timeout(5_000),
+      }),
+    );
+
+    expect(path).toContain('language=multi');
+    expect(path).toContain('endpointing=100');
+    expect(path).not.toContain('detect_language');
+  });
 });
 
 describe('the AssemblyAI live session', () => {

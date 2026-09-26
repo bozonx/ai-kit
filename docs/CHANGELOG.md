@@ -18,6 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Validate STT provider response shapes and reject invalid durations instead of recording zero-cost
   successful calls. Unreported duration requires measurable WAV audio or a caller-supplied duration.
 - Forward the requested language to AssemblyAI live transcription.
+- Use Deepgram's multilingual model for live sessions without a language: streaming cannot
+  detect one, so `detect_language` is only sent to batch requests.
 
 ## [0.5.0] - 2026-09-23
 

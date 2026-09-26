@@ -25,6 +25,8 @@ import { openSocket, pumpAudio } from './socket.js';
 const DEFAULT_BASE_URL = 'https://api.deepgram.com';
 const DEFAULT_STREAMING_URL = 'wss://api.deepgram.com';
 const CONTEXT = { provider: 'deepgram' };
+const MULTILINGUAL = 'multi';
+const MULTILINGUAL_ENDPOINTING_MS = '100';
 
 interface Word {
   word: string;
@@ -118,12 +120,18 @@ function queryFor(
   modelId: string,
   options: TranscriptionOptions,
   extra: Record<string, string> = {},
+  live = false,
 ): URLSearchParams {
   const query = new URLSearchParams({ model: modelId, ...extra });
   query.set('punctuate', String(options.punctuation !== false));
   query.set('smart_format', String(options.punctuation !== false));
   if (options.language) query.set('language', options.language);
-  else query.set('detect_language', 'true');
+  // A live session cannot detect the language; the multilingual model follows
+  // whatever is spoken instead, and Deepgram wants short endpointing for it.
+  else if (live) {
+    query.set('language', MULTILINGUAL);
+    query.set('endpointing', MULTILINGUAL_ENDPOINTING_MS);
+  } else query.set('detect_language', 'true');
   if (options.diarization) query.set('diarize', 'true');
   for (const term of options.keyterms ?? []) query.append('keyterm', term);
   return query;
@@ -203,12 +211,17 @@ export const deepgramSttProvider: SttProviderFactory = ({
 
     async transcribeStream(request: ProviderStreamRequest): Promise<AsyncIterable<SttStreamEvent>> {
       const context = { ...CONTEXT, model: request.modelId };
-      const query = queryFor(request.modelId, request.options, {
-        encoding: 'linear16',
-        sample_rate: String(request.sampleRate),
-        channels: '1',
-        interim_results: 'true',
-      });
+      const query = queryFor(
+        request.modelId,
+        request.options,
+        {
+          encoding: 'linear16',
+          sample_rate: String(request.sampleRate),
+          channels: '1',
+          interim_results: 'true',
+        },
+        true,
+      );
 
       const session = await openSocket(
         `${(baseUrl ?? DEFAULT_STREAMING_URL).replace(/\/$/, '')}/v1/listen?${query.toString()}`,
