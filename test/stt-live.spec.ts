@@ -342,6 +342,31 @@ describe('the Deepgram live session', () => {
     expect(path).toContain('endpointing=100');
     expect(path).not.toContain('detect_language');
   });
+
+  it('keeps the multilingual endpointing when the caller names it, and only then', async () => {
+    const paths: string[] = [];
+    const url = await serve((socket, request) => {
+      paths.push(request.url ?? '');
+      socket.close(1000);
+    });
+
+    for (const language of ['multi', 'ru']) {
+      await collect(
+        await live(deepgramSttProvider({ apiKey: 'k', baseUrl: url }), {
+          modelId: 'nova-3',
+          options: { language },
+          sampleRate: 16_000,
+          audio,
+          signal: AbortSignal.timeout(5_000),
+        }),
+      );
+    }
+
+    expect(paths[0]).toContain('language=multi');
+    expect(paths[0]).toContain('endpointing=100');
+    expect(paths[1]).toContain('language=ru');
+    expect(paths[1]).not.toContain('endpointing');
+  });
 });
 
 describe('the AssemblyAI live session', () => {

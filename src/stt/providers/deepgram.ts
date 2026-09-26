@@ -125,13 +125,13 @@ function queryFor(
   const query = new URLSearchParams({ model: modelId, ...extra });
   query.set('punctuate', String(options.punctuation !== false));
   query.set('smart_format', String(options.punctuation !== false));
-  if (options.language) query.set('language', options.language);
   // A live session cannot detect the language; the multilingual model follows
-  // whatever is spoken instead, and Deepgram wants short endpointing for it.
-  else if (live) {
-    query.set('language', MULTILINGUAL);
-    query.set('endpointing', MULTILINGUAL_ENDPOINTING_MS);
-  } else query.set('detect_language', 'true');
+  // whatever is spoken instead, and Deepgram wants short endpointing for it,
+  // whether the caller named it or left the language out.
+  const language = options.language ?? (live ? MULTILINGUAL : undefined);
+  if (language) query.set('language', language);
+  else query.set('detect_language', 'true');
+  if (live && language === MULTILINGUAL) query.set('endpointing', MULTILINGUAL_ENDPOINTING_MS);
   if (options.diarization) query.set('diarize', 'true');
   for (const term of options.keyterms ?? []) query.append('keyterm', term);
   return query;
