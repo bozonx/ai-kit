@@ -5,6 +5,7 @@ import type { AddressInfo } from 'node:net';
 import { isAiError } from '../src/errors.js';
 import { assemblyAiSttProvider } from '../src/stt/providers/assemblyai.js';
 import { deepgramSttProvider } from '../src/stt/providers/deepgram.js';
+import { createPcm16ToFloat32, sherpaOnnxSttProvider } from '../src/stt/providers/sherpa-onnx.js';
 import { wsSocketOpener } from '../src/node/ws.js';
 import type { SocketOpener } from '../src/ports.js';
 import { openSocket } from '../src/stt/providers/socket.js';
@@ -434,5 +435,155 @@ describe('the AssemblyAI live session', () => {
       { type: 'partial', text: 'hel', startMs: 0 },
       { type: 'final', segment: { startMs: 100, endMs: 800, text: 'Hello there.' } },
     ]);
+  });
+});
+
+/** Float32 little-endian samples, as the sherpa-onnx server reads them. */
+function floats(bytes: Uint8Array): number[] {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  return Array.from({ length: bytes.byteLength / 4 }, (_, index) =>
+    view.getFloat32(index * 4, true),
+  );
+}
+
+function pcm16(...samples: number[]): Uint8Array {
+  const bytes = new Uint8Array(samples.length * 2);
+  const view = new DataView(bytes.buffer);
+  samples.forEach((sample, index) => view.setInt16(index * 2, sample, true));
+  return bytes;
+}
+
+describe('PCM16 for the sherpa-onnx server', () => {
+  it('scales samples to float32 as they are when the rates match', () => {
+    const convert = createPcm16ToFloat32(16_000, 16_000);
+    expect(floats(convert(pcm16(0, 16_384, -32_768)))).toEqual([0, 0.5, -1]);
+  });
+
+  it('interpolates across chunk boundaries when the capture rate is lower', () => {
+    const convert = createPcm16ToFloat32(8_000, 16_000);
+    const first = floats(convert(pcm16(0, 16_384)));
+    const second = floats(convert(pcm16(0)));
+    expect(first).toEqual([0, 0.25, 0.5]);
+    // The sample between the chunks is interpolated from both of them.
+    expect(second).toEqual([0.25, 0]);
+  });
+
+  it('refuses audio that is not whole PCM16 samples', () => {
+    const convert = createPcm16ToFloat32(16_000, 16_000);
+    expect(() => convert(new Uint8Array(3))).toThrow('odd number of bytes');
+  });
+});
+
+describe('the sherpa-onnx live session', () => {
+  const result = (fields: Record<string, unknown>): string =>
+    JSON.stringify({ tokens: [], ys_probs: [], words: [], is_eof: false, ...fields });
+
+  it('streams float32 audio, ends it with Done, and settles each segment once', async () => {
+    const received: Array<string | number[]> = [];
+    const url = await serve(socket => {
+      socket.on('message', (data: Buffer, isBinary: boolean) => {
+        if (!isBinary) {
+          received.push(data.toString());
+          socket.send(
+            result({
+              text: 'HOW ARE YOU',
+              segment: 1,
+              start_time: 1.5,
+              timestamps: [0, 0.4],
+              is_final: true,
+            }),
+          );
+          socket.send('Done!');
+          return;
+        }
+        received.push(floats(new Uint8Array(data)));
+        socket.send(result({ text: '', segment: 0, start_time: 0, is_final: false }));
+        socket.send(result({ text: 'HELLO', segment: 0, start_time: 0, is_final: false }));
+        // Repeated after every decoding step until something changes.
+        socket.send(result({ text: 'HELLO', segment: 0, start_time: 0, is_final: false }));
+        socket.send(
+          result({
+            text: 'HELLO WORLD',
+            segment: 0,
+            start_time: 0,
+            timestamps: [0.1, 0.9],
+            is_final: true,
+          }),
+        );
+        socket.send(result({ text: 'HOW', segment: 1, start_time: 1.5, is_final: false }));
+      });
+    });
+
+    const events = await collect(
+      await live(sherpaOnnxSttProvider({ apiKey: '', baseUrl: url }), {
+        modelId: 'server-model',
+        options: { language: 'en' },
+        sampleRate: 16_000,
+        audio: {
+          // eslint-disable-next-line @typescript-eslint/require-await
+          async *[Symbol.asyncIterator]() {
+            yield { data: pcm16(16_384) };
+          },
+        },
+        signal: AbortSignal.timeout(5_000),
+      }),
+    );
+
+    expect(received).toEqual([[0.5], 'Done']);
+    expect(events).toEqual([
+      { type: 'partial', text: 'HELLO', startMs: 0 },
+      { type: 'final', segment: { startMs: 0, endMs: 900, text: 'HELLO WORLD' } },
+      { type: 'partial', text: 'HOW', startMs: 1500 },
+      { type: 'final', segment: { startMs: 1500, endMs: 1900, text: 'HOW ARE YOU' } },
+    ]);
+  });
+
+  it('clears a draft that its segment ended without', async () => {
+    const url = await serve(socket => {
+      socket.on('message', () => undefined);
+      socket.send(result({ text: 'UH', segment: 0, start_time: 0, is_final: false }));
+      socket.send(result({ text: '', segment: 0, start_time: 0, is_final: true }));
+      socket.send('Done!');
+    });
+
+    const events = await collect(
+      await live(sherpaOnnxSttProvider({ apiKey: '', baseUrl: url }), {
+        modelId: 'server-model',
+        options: {},
+        sampleRate: 16_000,
+        audio,
+        signal: AbortSignal.timeout(5_000),
+      }),
+    );
+
+    expect(events).toEqual([
+      { type: 'partial', text: 'UH', startMs: 0 },
+      { type: 'partial', text: '', startMs: 0 },
+    ]);
+  });
+
+  it('names the provider when the server cannot be reached', async () => {
+    const provider = sherpaOnnxSttProvider({ apiKey: '', baseUrl: 'ws://127.0.0.1:1' });
+    await expect(
+      live(provider, {
+        modelId: 'server-model',
+        options: {},
+        sampleRate: 16_000,
+        audio,
+        signal: AbortSignal.timeout(5_000),
+      }),
+    ).rejects.toThrow('sherpa-onnx');
+  });
+
+  it('has no batch transcription', async () => {
+    const provider = sherpaOnnxSttProvider({ apiKey: '' });
+    await expect(
+      provider.transcribe({
+        modelId: 'server-model',
+        source: { data: new Uint8Array(), mimeType: 'audio/wav' },
+        options: {},
+        signal: new AbortController().signal,
+      }),
+    ).rejects.toThrow('live audio only');
   });
 });

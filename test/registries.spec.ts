@@ -150,6 +150,7 @@ describe('the speech and translation registries', () => {
 
   it('ship the adapters the package knows about', () => {
     expect(new SttProviderRegistry({ keys }).has('deepgram')).toBe(true);
+    expect(new SttProviderRegistry({ keys }).has('sherpa-onnx')).toBe(true);
     // Not `google`: that id is Gemini's, and the key provider is asked for a
     // key by provider id — Cloud Translation is a different credential.
     expect(new MtProviderRegistry({ keys }).has('google-translate')).toBe(true);

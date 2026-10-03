@@ -14,8 +14,8 @@ application, not here — and a test fails when it creeps in.
 > **Status: 0.4.0.** The package includes the catalog with multi-provider
 > routes, model-selection policy, provider registries, generation and streaming
 > execution with retries, prompt assembly, cost accounting, ports, error
-> taxonomy, speech-to-text — batch and live — over AssemblyAI, Deepgram, Groq
-> and any OpenAI-compatible server, subtitle rendering, and machine translation
+> taxonomy, speech-to-text — batch and live — over AssemblyAI, Deepgram, Groq,
+> any OpenAI-compatible server and a self-hosted sherpa-onnx server, subtitle rendering, and machine translation
 > over a dedicated engine with a binding glossary and deterministic quality
 > detectors. It runs on a server, in a browser and in a Tauri webview.
 >
@@ -34,13 +34,13 @@ visible without publishing.
 
 ## Entry points
 
-| Import | What is in it |
-|---|---|
-| `@bozonx/ai-kit` | `createAiKit` and everything needed to call it: the catalog, pricing, policy, errors, ports, prompt assembly, tools, chat history compaction, request and result types |
-| `@bozonx/ai-kit/stt` | Speech extras: provider adapters, subtitles, word segmentation, audio helpers (`estimateAudioSeconds`, `SilenceDetector`, `PhraseChunker`, `pcm16ToWav`) |
-| `@bozonx/ai-kit/translate` | Translation extras: the Cloud Translation adapter, parallel text splitting, the binding glossary, the quality detectors |
-| `@bozonx/ai-kit/stream` | The stream-part types and the SSE codec (`encodeSse`, `SseDecoder`) |
-| `@bozonx/ai-kit/node` | What needs Node: `readCatalogFile` and `wsSocketOpener` |
+| Import                     | What is in it                                                                                                                                                          |
+| -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `@bozonx/ai-kit`           | `createAiKit` and everything needed to call it: the catalog, pricing, policy, errors, ports, prompt assembly, tools, chat history compaction, request and result types |
+| `@bozonx/ai-kit/stt`       | Speech extras: provider adapters, subtitles, word segmentation, audio helpers (`estimateAudioSeconds`, `SilenceDetector`, `PhraseChunker`, `pcm16ToWav`)               |
+| `@bozonx/ai-kit/translate` | Translation extras: the Cloud Translation adapter, parallel text splitting, the binding glossary, the quality detectors                                                |
+| `@bozonx/ai-kit/stream`    | The stream-part types and the SSE codec (`encodeSse`, `SseDecoder`)                                                                                                    |
+| `@bozonx/ai-kit/node`      | What needs Node: `readCatalogFile` and `wsSocketOpener`                                                                                                                |
 
 Every entry point except `/node` loads without Node: the network goes through
 the `Transport` port, hashing through Web Crypto, and a test walks the import
@@ -132,17 +132,17 @@ A model definition carries one provider, and that provider is its first route.
 tried in `priority` order:
 
 ```yaml
-  - name: claude-sonnet-4.5
-    provider: openrouter
-    model: anthropic/claude-sonnet-4.5
-    pricing: { version: '2026-08', inputPerMTok: 3000000, outputPerMTok: 15000000 }
-    routes:
-      - id: sonnet-direct # your own id, echoed back in the accounting
-        provider: anthropic
-        model: claude-sonnet-4-5
-        priority: 10
-        pricing: { version: '2026-08-direct', inputPerMTok: 3000000, outputPerMTok: 15000000 }
-        capabilities: { structuredOutput: true } # only what this route changes
+- name: claude-sonnet-4.5
+  provider: openrouter
+  model: anthropic/claude-sonnet-4.5
+  pricing: { version: '2026-08', inputPerMTok: 3000000, outputPerMTok: 15000000 }
+  routes:
+    - id: sonnet-direct # your own id, echoed back in the accounting
+      provider: anthropic
+      model: claude-sonnet-4-5
+      priority: 10
+      pricing: { version: '2026-08-direct', inputPerMTok: 3000000, outputPerMTok: 15000000 }
+      capabilities: { structuredOutput: true } # only what this route changes
 ```
 
 Every route of a model is tried before the next model is considered, which is
@@ -504,6 +504,29 @@ models:
     tier: standard
     contextSize: 131072
     maxOutputTokens: 4096
+```
+
+### Self-hosted sherpa-onnx
+
+`sherpa-onnx` is a built-in live speech provider for a
+`sherpa-onnx-online-websocket-server`, run on the same machine or somewhere on
+the local network with any streaming model it supports. The model is the one
+the server was started with, so the catalog's `model` is only a label and the
+requested language is not sent. The adapter converts PCM16 to the float32 the
+server reads, at its default 16 kHz input rate, and has no batch call. The
+server has no authentication: the `KeyProvider` may return an empty key.
+
+```yaml
+requirePricing: false
+models:
+  - name: office-dictation
+    kind: stt
+    provider: sherpa-onnx
+    model: nemotron-streaming
+    baseUrl: ws://speech.office.lan:6006
+    tier: standard
+    modalities: { input: [audio], output: [text] }
+    sttCapabilities: { realtime: true, punctuation: true }
 ```
 
 ## Installing only what you use

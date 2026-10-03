@@ -7,6 +7,7 @@ import { assemblyAiSttProvider } from './providers/assemblyai.js';
 import { deepgramSttProvider } from './providers/deepgram.js';
 import { groqSttProvider } from './providers/groq.js';
 import { openAiCompatibleSttProvider } from './providers/openai-compatible.js';
+import { sherpaOnnxSttProvider } from './providers/sherpa-onnx.js';
 import type { SttProvider, SttProviderFactory } from './types.js';
 
 /**
@@ -22,6 +23,7 @@ const BUILTIN_FACTORIES: Readonly<Record<string, SttProviderFactory>> = {
   deepgram: deepgramSttProvider,
   groq: groqSttProvider,
   'openai-compatible': openAiCompatibleSttProvider,
+  'sherpa-onnx': sherpaOnnxSttProvider,
 };
 
 export interface SttRegistryOptions {

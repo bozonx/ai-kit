@@ -14,6 +14,7 @@ export {
   openAiCompatibleSttAdapter,
   openAiCompatibleSttProvider,
 } from './providers/openai-compatible.js';
+export { createPcm16ToFloat32, sherpaOnnxSttProvider } from './providers/sherpa-onnx.js';
 export type {
   OpenAiCompatibleSttPreset,
   VerboseTranscription,

@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- Add the built-in `sherpa-onnx` live speech adapter for a self-hosted
+  `sherpa-onnx-online-websocket-server`, and `createPcm16ToFloat32` for its audio format.
 - Measure WAV duration from its header and reject unmeasured audio instead of billing from a size guess.
 - Preserve live-session accounting on early exit and stop audio pumps when a provider socket closes.
 - Validate successful speech responses, redact provider error bodies, and handle formatted streaming turns once.
